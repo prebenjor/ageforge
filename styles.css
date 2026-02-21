@@ -381,6 +381,8 @@ button {
   font-size: 0.95rem;
   padding: 9px 12px;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
 }
 
 button:hover {

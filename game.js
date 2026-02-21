@@ -430,8 +430,10 @@ let statusTimer;
 let lastFrame = performance.now();
 let renderAccumulator = 0;
 let autosaveAccumulator = 0;
+let heavyAccumulator = 0;
 let lastRenderedAge = -1;
 const sceneCooldownUntil = {};
+let uiDirty = true;
 
 const resourceGrid = document.getElementById("resource-grid");
 const actionsList = document.getElementById("actions-list");
@@ -583,6 +585,7 @@ function addLog(message) {
   if (state.logs.length > 36) {
     state.logs.length = 36;
   }
+  uiDirty = true;
 }
 
 function getRequirementProgress(targetRequirements) {
@@ -618,6 +621,7 @@ function unlockAges() {
     addLog(`${AGES[state.ageIndex].name} unlocked.`);
     applyAgeReward(AGES[state.ageIndex].reward);
     flashStatus(`${AGES[state.ageIndex].name} reached.`);
+    uiDirty = true;
   }
 }
 
@@ -744,6 +748,7 @@ function buyBuilding(buildingId) {
   applyCosts(cost);
   state.buildings[building.id] += 1;
   addLog(`${building.name} built (${state.buildings[building.id]}).`);
+  uiDirty = true;
 }
 
 function buyUpgrade(upgradeId) {
@@ -760,6 +765,7 @@ function buyUpgrade(upgradeId) {
   applyCosts(upgrade.cost);
   state.upgrades.push(upgrade.id);
   addLog(`Upgrade complete: ${upgrade.name}.`);
+  uiDirty = true;
 }
 
 function triggerSceneHotspot(hotspotId) {
@@ -1042,16 +1048,27 @@ function renderEventLog() {
     .join("");
 }
 
-function render() {
+function renderDynamic() {
   const rates = getRatesPerSecond();
   renderHeader();
-  renderWorldScene();
   renderResources(rates);
+}
+
+function renderHeavy() {
+  renderWorldScene();
   renderActions();
   renderBuildings();
   renderUpgrades();
   renderTimeline();
   renderEventLog();
+}
+
+function render(forceHeavy = false) {
+  renderDynamic();
+  if (forceHeavy || uiDirty) {
+    renderHeavy();
+    uiDirty = false;
+  }
 }
 
 function flashStatus(message) {
@@ -1154,9 +1171,15 @@ function gameLoop(timestamp) {
   tick(dt);
   renderAccumulator += dt;
   autosaveAccumulator += dt;
+  heavyAccumulator += dt;
 
-  if (renderAccumulator >= 0.12) {
-    render();
+  if (heavyAccumulator >= 0.35) {
+    uiDirty = true;
+    heavyAccumulator = 0;
+  }
+
+  if (renderAccumulator >= 0.08) {
+    render(false);
     renderAccumulator = 0;
   }
 
@@ -1168,16 +1191,7 @@ function gameLoop(timestamp) {
   requestAnimationFrame(gameLoop);
 }
 
-document.addEventListener("click", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-
-  const target = event.target.closest("button");
-  if (!target) {
-    return;
-  }
-
+function handleGameplayButtonPress(target) {
   const actionId = target.dataset.action;
   const buildingId = target.dataset.build;
   const upgradeId = target.dataset.upgrade;
@@ -1185,16 +1199,63 @@ document.addEventListener("click", (event) => {
 
   if (actionId) {
     manualAction(actionId);
-    render();
-  } else if (hotspotId) {
+    render(false);
+    return true;
+  }
+
+  if (hotspotId) {
     triggerSceneHotspot(hotspotId);
-    render();
-  } else if (buildingId) {
+    render(false);
+    return true;
+  }
+
+  if (buildingId) {
     buyBuilding(buildingId);
-    render();
-  } else if (upgradeId) {
+    render(true);
+    return true;
+  }
+
+  if (upgradeId) {
     buyUpgrade(upgradeId);
-    render();
+    render(true);
+    return true;
+  }
+
+  return false;
+}
+
+document.addEventListener("pointerdown", (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+
+  const target = event.target.closest("button");
+  if (!target || target.disabled) {
+    return;
+  }
+
+  const handled = handleGameplayButtonPress(target);
+  if (handled) {
+    event.preventDefault();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+
+  if (!(event.target instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  if (event.target.disabled) {
+    return;
+  }
+
+  const handled = handleGameplayButtonPress(event.target);
+  if (handled) {
+    event.preventDefault();
   }
 });
 
