@@ -1,7 +1,7 @@
 import Phaser from "phaser";
-import { RESOURCE_LABELS, UNIT_CONFIGS, getEnemyWave } from "../../game/config";
+import { RESOURCE_LABELS, UNIT_CONFIGS, computeBattleModifiers, getEnemyWave } from "../../game/config";
 import { useGameStore } from "../../game/store";
-import type { BattleCommand } from "../../game/types";
+import type { BattleCommand, BattleModifiers } from "../../game/types";
 
 type Team = "ally" | "enemy";
 
@@ -47,6 +47,8 @@ export class BattleScene extends Phaser.Scene {
   private lastActorId = 0;
   private overdriveUntil = 0;
   private startingArmy: Record<string, number> = {};
+  private allyMods: BattleModifiers = computeBattleModifiers({}, "line");
+  private rallyMarker: Phaser.GameObjects.Arc | null = null;
   private running = false;
 
   constructor() {
@@ -75,6 +77,18 @@ export class BattleScene extends Phaser.Scene {
       const ring = this.add.circle(x, 300, 26, 0x607d8b, 0.22).setStrokeStyle(2, 0x84a8b5, 0.5);
       this.capturePoints.push({ x, y: 300, ring, owner: "neutral", progress: 0 });
     }
+
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      const store = useGameStore.getState();
+      if (store.phase !== "battle" || store.pendingTargetCommand !== "rally") {
+        return;
+      }
+
+      const x = Phaser.Math.Clamp(pointer.x, 80, 720);
+      const y = Phaser.Math.Clamp(pointer.y, 90, 520);
+      store.issueCommand("rally", { x, y });
+      this.flashRallyMarker(x, y);
+    });
   }
 
   update(_: number, deltaMs: number): void {
@@ -108,6 +122,10 @@ export class BattleScene extends Phaser.Scene {
 
     const state = useGameStore.getState();
     this.startingArmy = { ...state.army };
+    this.allyMods = computeBattleModifiers(state.army, state.formation);
+    if (this.allyMods.labels.length) {
+      this.statusText.setText(`Battle started. ${this.allyMods.labels[0]}`);
+    }
 
     const allyStartX = 120;
     const enemyStartX = 680;
@@ -146,6 +164,24 @@ export class BattleScene extends Phaser.Scene {
       actor.hpBar.destroy();
     }
     this.actors = [];
+    this.rallyMarker?.destroy();
+    this.rallyMarker = null;
+  }
+
+  private flashRallyMarker(x: number, y: number): void {
+    this.rallyMarker?.destroy();
+    this.rallyMarker = this.add.circle(x, y, 22, 0x7fe2c5, 0.16).setStrokeStyle(2, 0xaff5dd, 0.95).setDepth(20);
+    this.tweens.add({
+      targets: this.rallyMarker,
+      radius: 42,
+      alpha: 0,
+      duration: 550,
+      ease: "Sine.Out",
+      onComplete: () => {
+        this.rallyMarker?.destroy();
+        this.rallyMarker = null;
+      }
+    });
   }
 
   private spawnUnit(team: Team, unitId: string, x: number, y: number): void {
@@ -153,6 +189,20 @@ export class BattleScene extends Phaser.Scene {
     if (!config) {
       return;
     }
+
+    const role = config.role;
+    const mods = team === "ally" ? this.allyMods : null;
+    const hpMult = mods ? mods.hpMult * (mods.hpByRole[role] ?? 1) : 1;
+    const damageMult = mods ? mods.damageMult * (mods.damageByRole[role] ?? 1) : 1;
+    const speedMult = mods ? mods.speedMult * (mods.speedByRole[role] ?? 1) : 1;
+    const rangeMult = mods ? mods.rangeMult * (mods.rangeByRole[role] ?? 1) : 1;
+    const cooldownMult = mods ? mods.cooldownMult * (mods.cooldownByRole[role] ?? 1) : 1;
+
+    const maxHp = config.hp * hpMult;
+    const damage = config.damage * damageMult;
+    const speed = config.speed * speedMult;
+    const range = config.range * rangeMult;
+    const cooldown = config.cooldown * cooldownMult;
 
     const color = team === "ally" ? 0x7fe2c5 : 0xf08d8b;
     const body = this.add.circle(x, y, config.radius, color, 0.95).setDepth(10);
@@ -164,13 +214,13 @@ export class BattleScene extends Phaser.Scene {
       actorId: this.lastActorId,
       unitId,
       team,
-      hp: config.hp,
-      maxHp: config.hp,
-      damage: config.damage,
-      range: config.range,
-      speed: config.speed,
-      cooldown: config.cooldown,
-      cooldownLeft: Phaser.Math.FloatBetween(0, config.cooldown * 0.6),
+      hp: maxHp,
+      maxHp,
+      damage,
+      range,
+      speed,
+      cooldown,
+      cooldownLeft: Phaser.Math.FloatBetween(0, cooldown * 0.6),
       radius: config.radius,
       body,
       hpBack,
@@ -203,13 +253,15 @@ export class BattleScene extends Phaser.Scene {
     }
 
     if (command.kind === "rally") {
-      const rallyY = LANES[Phaser.Math.Between(1, LANES.length - 2)];
+      const rallyX = Phaser.Math.Clamp(command.target?.x ?? 420, 110, 690);
+      const rallyY = Phaser.Math.Clamp(command.target?.y ?? LANES[2], 100, 500);
+      this.flashRallyMarker(rallyX, rallyY);
       for (const actor of allies) {
-        actor.forcedX = 420;
+        actor.forcedX = rallyX;
         actor.forcedY = rallyY;
         actor.forcedUntil = now + 5;
       }
-      this.statusText.setText("Rally order: push center line.");
+      this.statusText.setText("Rally order: moving to target marker.");
       return;
     }
 

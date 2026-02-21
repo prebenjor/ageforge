@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   AGES,
   COMMAND_COOLDOWNS,
+  FORMATIONS,
   INITIAL_RESOURCES,
   MANUAL_ACTIONS,
   RESOURCE_LABELS,
@@ -12,7 +13,7 @@ import {
   createResourceMap,
   getUnitCapByAge
 } from "./config";
-import type { BattleCommand, BattleResult, ResourceKey, Resources } from "./types";
+import type { BattleCommand, BattleResult, CommandKind, FormationId, ResourceKey, Resources } from "./types";
 
 const SAVE_KEY = "ageforge-v2-save";
 const SAVE_VERSION = 1;
@@ -20,6 +21,7 @@ const SAVE_VERSION = 1;
 const structureById = Object.fromEntries(STRUCTURES.map((item) => [item.id, item]));
 const unitById = Object.fromEntries(UNIT_CONFIGS.map((item) => [item.id, item]));
 const actionById = Object.fromEntries(MANUAL_ACTIONS.map((item) => [item.id, item]));
+const formationById = Object.fromEntries(FORMATIONS.map((item) => [item.id, item]));
 
 export type Phase = "build" | "battle";
 
@@ -30,12 +32,14 @@ export interface GameState {
   ageIndex: number;
   structures: Record<string, number>;
   army: Record<string, number>;
+  formation: FormationId;
   phase: Phase;
   battleNonce: number;
   battleTimer: number;
   worldTime: number;
   commandQueue: BattleCommand[];
-  commandCooldownReadyAt: Record<BattleCommand["kind"], number>;
+  commandCooldownReadyAt: Record<CommandKind, number>;
+  pendingTargetCommand: CommandKind | null;
   logs: string[];
   lastReport: string;
   dirty: boolean;
@@ -44,7 +48,10 @@ export interface GameState {
   buildStructure: (structureId: string) => void;
   trainUnit: (unitId: string) => void;
   disbandUnit: (unitId: string) => void;
-  issueCommand: (kind: BattleCommand["kind"]) => void;
+  setFormation: (formationId: FormationId) => void;
+  beginTargetingCommand: (kind: CommandKind) => void;
+  cancelTargetingCommand: () => void;
+  issueCommand: (kind: CommandKind, target?: { x: number; y: number }) => void;
   startBattle: () => void;
   resolveBattle: (result: BattleResult) => void;
   tick: (dt: number) => void;
@@ -184,6 +191,7 @@ function serializeState(state: GameState): object {
     ageIndex: state.ageIndex,
     structures: state.structures,
     army: state.army,
+    formation: state.formation,
     logs: state.logs,
     lastReport: state.lastReport
   };
@@ -196,12 +204,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   ageIndex: 0,
   structures: emptyCountsFromList(STRUCTURES),
   army: emptyCountsFromList(UNIT_CONFIGS),
+  formation: "line",
   phase: "build",
   battleNonce: 0,
   battleTimer: 0,
   worldTime: 0,
   commandQueue: [],
   commandCooldownReadyAt: { rally: 0, retreat: 0, overdrive: 0 },
+  pendingTargetCommand: null,
   logs: ["Settlement command initialized."],
   lastReport: "No battles yet.",
   dirty: true,
@@ -270,21 +280,58 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ army: { ...state.army, [unitId]: current - 1 }, dirty: true });
   },
 
-  issueCommand: (kind) => {
+  setFormation: (formationId) => {
+    if (!formationById[formationId]) {
+      return;
+    }
+    const state = get();
+    set({ formation: formationId, logs: addLog(state.logs, `${formationById[formationId].name} selected.`), dirty: true });
+  },
+
+  beginTargetingCommand: (kind) => {
     const state = get();
     if (state.phase !== "battle") {
+      return;
+    }
+    if (kind !== "rally") {
       return;
     }
     const readyAt = state.commandCooldownReadyAt[kind];
     if (state.worldTime < readyAt) {
       return;
     }
+    set({ pendingTargetCommand: kind });
+  },
+
+  cancelTargetingCommand: () => {
+    set({ pendingTargetCommand: null });
+  },
+
+  issueCommand: (kind, target) => {
+    const state = get();
+    if (state.phase !== "battle") {
+      return;
+    }
+
+    if (kind === "rally" && !target) {
+      return;
+    }
+
+    const readyAt = state.commandCooldownReadyAt[kind];
+    if (state.worldTime < readyAt) {
+      return;
+    }
+
     set({
-      commandQueue: [...state.commandQueue, { seq: state.commandQueue.length + 1, kind, issuedAt: state.worldTime }],
+      commandQueue: [
+        ...state.commandQueue,
+        { seq: state.commandQueue.length + 1, kind, issuedAt: state.worldTime, target }
+      ],
       commandCooldownReadyAt: {
         ...state.commandCooldownReadyAt,
         [kind]: state.worldTime + COMMAND_COOLDOWNS[kind]
       },
+      pendingTargetCommand: null,
       dirty: true
     });
   },
@@ -300,6 +347,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       battleTimer: 90,
       battleNonce: state.battleNonce + 1,
       commandQueue: [],
+      pendingTargetCommand: null,
       logs: addLog(state.logs, "Battle phase started."),
       dirty: true
     });
@@ -340,6 +388,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       resources: nextResources,
       lifetime: nextLifetime,
       commandQueue: [],
+      pendingTargetCommand: null,
       lastReport: report,
       logs: addLog(state.logs, report),
       dirty: true
@@ -369,6 +418,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       ageIndex,
       battleTimer: nextBattleTimer,
       worldTime: state.worldTime + dt,
+      pendingTargetCommand: state.phase === "battle" ? state.pendingTargetCommand : null,
       logs
     });
 
@@ -391,6 +441,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         ageIndex?: number;
         structures?: Record<string, number>;
         army?: Record<string, number>;
+        formation?: FormationId;
         logs?: string[];
         lastReport?: string;
       };
@@ -406,8 +457,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         ageIndex: Math.max(0, Math.min(AGES.length - 1, parsed.ageIndex ?? 0)),
         structures: { ...emptyCountsFromList(STRUCTURES), ...(parsed.structures ?? {}) },
         army: { ...emptyCountsFromList(UNIT_CONFIGS), ...(parsed.army ?? {}) },
+        formation: formationById[parsed.formation ?? "line"] ? (parsed.formation as FormationId) : "line",
         logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 50) : ["Save loaded."],
         lastReport: parsed.lastReport ?? "No battles yet.",
+        pendingTargetCommand: null,
         loaded: true,
         dirty: false
       });
@@ -431,12 +484,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       ageIndex: 0,
       structures: emptyCountsFromList(STRUCTURES),
       army: emptyCountsFromList(UNIT_CONFIGS),
+      formation: "line",
       phase: "build",
       battleNonce: 0,
       battleTimer: 0,
       worldTime: 0,
       commandQueue: [],
       commandCooldownReadyAt: { rally: 0, retreat: 0, overdrive: 0 },
+      pendingTargetCommand: null,
       logs: ["Settlement command reset."],
       lastReport: "No battles yet.",
       dirty: true

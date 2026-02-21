@@ -41,10 +41,34 @@ export interface UnitConfig {
   radius: number;
 }
 
+export type CommandKind = "rally" | "retreat" | "overdrive";
+export type FormationId = "line" | "vanguard" | "skirmish" | "siege";
+
+export interface FormationConfig {
+  id: FormationId;
+  name: string;
+  description: string;
+}
+
+export interface BattleModifiers {
+  hpMult: number;
+  damageMult: number;
+  speedMult: number;
+  rangeMult: number;
+  cooldownMult: number;
+  hpByRole: Partial<Record<UnitRole, number>>;
+  damageByRole: Partial<Record<UnitRole, number>>;
+  speedByRole: Partial<Record<UnitRole, number>>;
+  rangeByRole: Partial<Record<UnitRole, number>>;
+  cooldownByRole: Partial<Record<UnitRole, number>>;
+  labels: string[];
+}
+
 export interface BattleCommand {
   seq: number;
-  kind: "rally" | "retreat" | "overdrive";
+  kind: CommandKind;
   issuedAt: number;
+  target?: { x: number; y: number };
 }
 
 export interface BattleResult {

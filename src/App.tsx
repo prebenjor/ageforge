@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useRef } from "react";
-import Phaser from "phaser";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGES,
   COMMAND_COOLDOWNS,
+  FORMATIONS,
   MANUAL_ACTIONS,
   RESOURCE_LABELS,
   RESOURCE_ORDER,
   STRUCTURES,
   UNIT_CONFIGS,
+  computeBattleModifiers,
   getUnitCapByAge
 } from "./game/config";
 import { getVisibleResources, useGameStore } from "./game/store";
-import type { ResourceKey } from "./game/types";
-import { createBattleGame } from "./phaser/createBattleGame";
+import type { CommandKind, ResourceKey } from "./game/types";
 
 const STEP = 0.05;
 const AUTOSAVE_INTERVAL = 15;
@@ -66,17 +66,20 @@ function costLabel(cost: Partial<Record<ResourceKey, number>>): string {
 
 export default function App(): JSX.Element {
   const sceneRef = useRef<HTMLDivElement | null>(null);
-  const phaserGameRef = useRef<Phaser.Game | null>(null);
+  const phaserGameRef = useRef<{ destroy: (removeCanvas: boolean, noReturn?: boolean) => void } | null>(null);
+  const [sceneReady, setSceneReady] = useState(false);
 
   const ageIndex = useGameStore((state) => state.ageIndex);
   const resources = useGameStore((state) => state.resources);
   const rates = useGameStore((state) => state.rates);
   const structures = useGameStore((state) => state.structures);
   const army = useGameStore((state) => state.army);
+  const formation = useGameStore((state) => state.formation);
   const phase = useGameStore((state) => state.phase);
   const battleTimer = useGameStore((state) => state.battleTimer);
   const worldTime = useGameStore((state) => state.worldTime);
   const commandReadyAt = useGameStore((state) => state.commandCooldownReadyAt);
+  const pendingTargetCommand = useGameStore((state) => state.pendingTargetCommand);
   const logs = useGameStore((state) => state.logs);
   const lastReport = useGameStore((state) => state.lastReport);
   const lifetime = useGameStore((state) => state.lifetime);
@@ -86,6 +89,9 @@ export default function App(): JSX.Element {
   const buildStructure = useGameStore((state) => state.buildStructure);
   const trainUnit = useGameStore((state) => state.trainUnit);
   const disbandUnit = useGameStore((state) => state.disbandUnit);
+  const setFormation = useGameStore((state) => state.setFormation);
+  const beginTargetingCommand = useGameStore((state) => state.beginTargetingCommand);
+  const cancelTargetingCommand = useGameStore((state) => state.cancelTargetingCommand);
   const startBattle = useGameStore((state) => state.startBattle);
   const issueCommand = useGameStore((state) => state.issueCommand);
   const load = useGameStore((state) => state.load);
@@ -132,10 +138,22 @@ export default function App(): JSX.Element {
     if (!sceneRef.current) {
       return;
     }
-    phaserGameRef.current = createBattleGame(sceneRef.current);
+    let disposed = false;
+    setSceneReady(false);
+
+    void import("./phaser/createBattleGame").then((module) => {
+      if (disposed || !sceneRef.current) {
+        return;
+      }
+      phaserGameRef.current = module.createBattleGame(sceneRef.current);
+      setSceneReady(true);
+    });
+
     return () => {
+      disposed = true;
       phaserGameRef.current?.destroy(true);
       phaserGameRef.current = null;
+      setSceneReady(false);
     };
   }, []);
 
@@ -169,6 +187,8 @@ export default function App(): JSX.Element {
 
   const armyCount = Object.values(army).reduce((sum, value) => sum + value, 0);
   const unitCap = getUnitCapByAge(ageIndex);
+  const battleMods = useMemo(() => computeBattleModifiers(army, formation), [army, formation]);
+  const commandCooldownLeft = (kind: CommandKind): number => Math.max(0, Math.ceil(commandReadyAt[kind] - worldTime));
 
   return (
     <div className="app-shell">
@@ -259,26 +279,40 @@ export default function App(): JSX.Element {
             <h2>Battle Theater</h2>
             <span className={`phase-chip ${phase}`}>{phase === "battle" ? `${Math.ceil(battleTimer)}s` : "Build"}</span>
           </div>
-          <div ref={sceneRef} className="scene-host" />
+          <div className={`scene-wrap ${pendingTargetCommand === "rally" ? "targeting" : ""}`}>
+            <div ref={sceneRef} className="scene-host" />
+            {!sceneReady ? (
+              <p className="scene-overlay">Loading battle renderer...</p>
+            ) : pendingTargetCommand === "rally" ? (
+              <p className="scene-overlay">Click battlefield to place Rally target</p>
+            ) : null}
+          </div>
 
           <div className="row controls">
             <button disabled={phase === "battle" || armyCount === 0} onClick={() => startBattle()}>
               Start Battle
             </button>
-            <button disabled={phase !== "battle" || worldTime < commandReadyAt.rally} onClick={() => issueCommand("rally")}>
-              Rally ({Math.max(0, Math.ceil(commandReadyAt.rally - worldTime))}s)
+            <button
+              disabled={phase !== "battle" || (pendingTargetCommand !== "rally" && worldTime < commandReadyAt.rally)}
+              onClick={() =>
+                pendingTargetCommand === "rally" ? cancelTargetingCommand() : beginTargetingCommand("rally")
+              }
+            >
+              {pendingTargetCommand === "rally"
+                ? "Cancel Rally Target"
+                : `Rally Target (${commandCooldownLeft("rally")}s)`}
             </button>
             <button
               disabled={phase !== "battle" || worldTime < commandReadyAt.retreat}
               onClick={() => issueCommand("retreat")}
             >
-              Retreat ({Math.max(0, Math.ceil(commandReadyAt.retreat - worldTime))}s)
+              Retreat ({commandCooldownLeft("retreat")}s)
             </button>
             <button
               disabled={phase !== "battle" || worldTime < commandReadyAt.overdrive}
               onClick={() => issueCommand("overdrive")}
             >
-              Overdrive ({Math.max(0, Math.ceil(commandReadyAt.overdrive - worldTime))}s)
+              Overdrive ({commandCooldownLeft("overdrive")}s)
             </button>
           </div>
 
@@ -289,6 +323,30 @@ export default function App(): JSX.Element {
         <section className="panel column">
           <h2>Army</h2>
           <p className="muted">Units {armyCount}/{unitCap}</p>
+          <h3>Formation</h3>
+          <div className="formation-grid">
+            {FORMATIONS.map((option) => (
+              <button
+                key={option.id}
+                className={`formation-btn ${formation === option.id ? "active" : ""}`}
+                disabled={phase === "battle"}
+                onClick={() => setFormation(option.id)}
+              >
+                <strong>{option.name}</strong>
+                <span>{option.description}</span>
+              </button>
+            ))}
+          </div>
+          <div className="card">
+            <strong>Active Modifiers</strong>
+            <ul className="mods-list">
+              {battleMods.labels.length ? (
+                battleMods.labels.map((label) => <li key={label}>{label}</li>)
+              ) : (
+                <li>No active bonuses.</li>
+              )}
+            </ul>
+          </div>
           <div className="stack">
             {visibleUnits.map((unit) => {
               const count = army[unit.id] ?? 0;

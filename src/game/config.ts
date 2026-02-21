@@ -1,4 +1,15 @@
-import type { AgeConfig, ManualAction, ResourceKey, Resources, StructureConfig, UnitConfig } from "./types";
+import type {
+  AgeConfig,
+  BattleModifiers,
+  FormationConfig,
+  FormationId,
+  ManualAction,
+  ResourceKey,
+  Resources,
+  StructureConfig,
+  UnitConfig,
+  UnitRole
+} from "./types";
 
 export const RESOURCE_ORDER: ResourceKey[] = ["food", "materials", "knowledge", "power", "data"];
 
@@ -171,11 +182,126 @@ export const UNIT_CONFIGS: UnitConfig[] = [
   }
 ];
 
+export const FORMATIONS: FormationConfig[] = [
+  {
+    id: "line",
+    name: "Line Formation",
+    description: "Balanced baseline with tighter spacing and no drawbacks."
+  },
+  {
+    id: "vanguard",
+    name: "Vanguard Push",
+    description: "Frontline units surge forward and soak pressure."
+  },
+  {
+    id: "skirmish",
+    name: "Skirmish Grid",
+    description: "Ranged units kite harder with faster attack cadence."
+  },
+  {
+    id: "siege",
+    name: "Siege Battery",
+    description: "Siege units gain range and firepower, with slower infantry."
+  }
+];
+
 export const COMMAND_COOLDOWNS = {
   rally: 8,
   retreat: 12,
   overdrive: 20
 } as const;
+
+const roleByUnitId = Object.fromEntries(UNIT_CONFIGS.map((unit) => [unit.id, unit.role]));
+
+function createRoleMap(fill = 1): Record<UnitRole, number> {
+  return {
+    frontline: fill,
+    ranged: fill,
+    support: fill,
+    siege: fill
+  };
+}
+
+function multiplyRoleValue(target: Partial<Record<UnitRole, number>>, role: UnitRole, value: number): void {
+  target[role] = (target[role] ?? 1) * value;
+}
+
+function roleCountFromArmy(army: Record<string, number>): Record<UnitRole, number> {
+  const counts = { frontline: 0, ranged: 0, support: 0, siege: 0 };
+  for (const [unitId, count] of Object.entries(army)) {
+    const role = roleByUnitId[unitId];
+    if (!role) {
+      continue;
+    }
+    counts[role] += count;
+  }
+  return counts;
+}
+
+export function computeBattleModifiers(army: Record<string, number>, formationId: FormationId): BattleModifiers {
+  const mods: BattleModifiers = {
+    hpMult: 1,
+    damageMult: 1,
+    speedMult: 1,
+    rangeMult: 1,
+    cooldownMult: 1,
+    hpByRole: createRoleMap(),
+    damageByRole: createRoleMap(),
+    speedByRole: createRoleMap(),
+    rangeByRole: createRoleMap(),
+    cooldownByRole: createRoleMap(),
+    labels: []
+  };
+
+  const roleCounts = roleCountFromArmy(army);
+  const droneCount = army.drone ?? 0;
+  const mechCount = army.mech ?? 0;
+
+  if (formationId === "line") {
+    mods.hpMult *= 1.05;
+    mods.labels.push("Line: +5% global HP");
+  } else if (formationId === "vanguard") {
+    multiplyRoleValue(mods.hpByRole, "frontline", 1.24);
+    multiplyRoleValue(mods.speedByRole, "frontline", 1.08);
+    mods.damageMult *= 1.03;
+    mods.labels.push("Vanguard: frontline HP/speed surge");
+  } else if (formationId === "skirmish") {
+    multiplyRoleValue(mods.cooldownByRole, "ranged", 0.84);
+    multiplyRoleValue(mods.speedByRole, "ranged", 1.12);
+    multiplyRoleValue(mods.hpByRole, "frontline", 0.92);
+    mods.labels.push("Skirmish: ranged cadence boosted");
+  } else if (formationId === "siege") {
+    multiplyRoleValue(mods.damageByRole, "siege", 1.2);
+    multiplyRoleValue(mods.rangeByRole, "siege", 1.2);
+    mods.speedMult *= 0.94;
+    mods.labels.push("Siege: artillery damage/range up");
+  }
+
+  if (roleCounts.frontline >= 6) {
+    multiplyRoleValue(mods.hpByRole, "frontline", 1.16);
+    mods.labels.push("Synergy Shieldwall: frontline +16% HP");
+  }
+  if (roleCounts.frontline >= 4 && roleCounts.ranged >= 5) {
+    multiplyRoleValue(mods.damageByRole, "ranged", 1.18);
+    mods.labels.push("Synergy Crossfire: ranged +18% damage");
+  }
+  if (roleCounts.siege >= 3) {
+    multiplyRoleValue(mods.damageByRole, "siege", 1.15);
+    multiplyRoleValue(mods.rangeByRole, "siege", 1.1);
+    mods.labels.push("Synergy Battery: siege +15% damage");
+  }
+  if (droneCount >= 4) {
+    mods.cooldownMult *= 0.9;
+    mods.labels.push("Synergy Drone Mesh: global cooldown -10%");
+  }
+  if (mechCount >= 2 && droneCount >= 2) {
+    mods.damageMult *= 1.08;
+    mods.hpMult *= 1.08;
+    mods.labels.push("Synergy Titan Net: +8% global HP/damage");
+  }
+
+  return mods;
+}
 
 export function createResourceMap(fill = 0): Resources {
   return {
