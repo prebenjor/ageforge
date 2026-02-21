@@ -67,6 +67,7 @@ export class BattleScene extends Phaser.Scene {
   private towers = new Map<number, TowerActor>();
   private enemies: EnemyActor[] = [];
   private pads = new Map<number, Phaser.GameObjects.Arc>();
+  private padZones: Phaser.GameObjects.Zone[] = [];
   private activeWaveNonce = -1;
   private running = false;
   private waveElapsed = 0;
@@ -111,8 +112,8 @@ export class BattleScene extends Phaser.Scene {
 
     for (const pad of PAD_LAYOUT) {
       const padCircle = this.add.circle(pad.x, pad.y, 16, 0x2a3e4f, 0.65).setStrokeStyle(2, 0x70a4bd, 0.6);
-      padCircle.setInteractive(new Phaser.Geom.Circle(0, 0, 22), Phaser.Geom.Circle.Contains);
-      padCircle.on("pointerdown", () => {
+      const hitZone = this.add.zone(pad.x, pad.y, 44, 44).setInteractive({ useHandCursor: true });
+      hitZone.on("pointerdown", () => {
         const state = useGameStore.getState();
         if (state.phase !== "build") {
           return;
@@ -120,6 +121,7 @@ export class BattleScene extends Phaser.Scene {
         state.placeTower(pad.id);
       });
       this.pads.set(pad.id, padCircle);
+      this.padZones.push(hitZone);
     }
   }
 
@@ -560,4 +562,3 @@ export class BattleScene extends Phaser.Scene {
     this.spawnQueue = [];
   }
 }
-
