@@ -1,4 +1,5 @@
 const SAVE_KEY = "ageforge-save-v1";
+const SAVE_VERSION = 2;
 
 const RESOURCE_ORDER = ["food", "materials", "knowledge", "power", "data"];
 
@@ -436,11 +437,29 @@ let lastRenderedAge = -1;
 const sceneCooldownUntil = {};
 let uiDirty = true;
 let frameCache = null;
+let saveDirty = false;
+let latestAutoSaveAt = 0;
+
+const numberFormatCache = new Map();
+const stringFormatCache = new Map();
+const MAX_FORMAT_CACHE_ENTRIES = 2000;
 
 const SIMULATION_STEP = 0.05;
 const MAX_SIMULATION_CATCHUP = 0.4;
 const DYNAMIC_RENDER_INTERVAL = 1 / 30;
 const HEAVY_RENDER_INTERVAL = 0.4;
+const AUTOSAVE_INTERVAL = 15;
+
+const perfStats = {
+  enabled: false,
+  panel: null,
+  frames: 0,
+  dynamicMs: 0,
+  heavyMs: 0,
+  simMs: 0,
+  simSteps: 0,
+  lastReportAt: performance.now()
+};
 
 const resourceGrid = document.getElementById("resource-grid");
 const actionsList = document.getElementById("actions-list");
@@ -497,6 +516,86 @@ function createInitialState() {
 
 function invalidateFrameCache() {
   frameCache = null;
+}
+
+function markStateDirty(options = {}) {
+  const withUI = options.ui !== false;
+  saveDirty = true;
+  invalidateFrameCache();
+  if (withUI) {
+    uiDirty = true;
+  }
+}
+
+function ensureFormatCacheCapacity() {
+  if (numberFormatCache.size > MAX_FORMAT_CACHE_ENTRIES) {
+    numberFormatCache.clear();
+  }
+  if (stringFormatCache.size > MAX_FORMAT_CACHE_ENTRIES) {
+    stringFormatCache.clear();
+  }
+}
+
+function ensurePerfPanel() {
+  if (perfStats.panel) {
+    return perfStats.panel;
+  }
+
+  const panel = document.createElement("div");
+  panel.id = "perf-hud";
+  panel.style.position = "fixed";
+  panel.style.right = "10px";
+  panel.style.bottom = "10px";
+  panel.style.zIndex = "1000";
+  panel.style.padding = "8px 10px";
+  panel.style.borderRadius = "10px";
+  panel.style.border = "1px solid rgba(31,42,44,0.24)";
+  panel.style.background = "rgba(252,250,244,0.92)";
+  panel.style.font = "12px/1.35 Space Grotesk, Trebuchet MS, sans-serif";
+  panel.style.color = "#1f2a2c";
+  panel.style.whiteSpace = "pre";
+  panel.style.pointerEvents = "none";
+  panel.style.display = "none";
+  document.body.appendChild(panel);
+  perfStats.panel = panel;
+  return panel;
+}
+
+function setPerfHudEnabled(enabled) {
+  perfStats.enabled = enabled;
+  const panel = ensurePerfPanel();
+  panel.style.display = enabled ? "block" : "none";
+}
+
+function updatePerfStats(timestamp) {
+  if (timestamp - perfStats.lastReportAt < 1000) {
+    return;
+  }
+
+  const elapsed = (timestamp - perfStats.lastReportAt) / 1000;
+  const fps = perfStats.frames / elapsed;
+  const avgDynamic = perfStats.frames ? perfStats.dynamicMs / perfStats.frames : 0;
+  const avgHeavy = perfStats.frames ? perfStats.heavyMs / perfStats.frames : 0;
+  const avgSim = perfStats.simSteps ? perfStats.simMs / perfStats.simSteps : 0;
+  const panel = ensurePerfPanel();
+
+  if (perfStats.enabled) {
+    const sinceSave = latestAutoSaveAt ? ((performance.now() - latestAutoSaveAt) / 1000).toFixed(1) : "-";
+    panel.textContent =
+      `FPS ${fps.toFixed(1)}\n` +
+      `dyn ${avgDynamic.toFixed(2)}ms\n` +
+      `heavy ${avgHeavy.toFixed(2)}ms\n` +
+      `sim ${avgSim.toFixed(2)}ms\n` +
+      `dirty ${saveDirty ? "yes" : "no"}\n` +
+      `saved ${sinceSave}s`;
+  }
+
+  perfStats.frames = 0;
+  perfStats.dynamicMs = 0;
+  perfStats.heavyMs = 0;
+  perfStats.simMs = 0;
+  perfStats.simSteps = 0;
+  perfStats.lastReportAt = timestamp;
 }
 
 function buildVisibleActions(ageIndex = state.ageIndex) {
@@ -673,11 +772,14 @@ function applyCosts(costs) {
   }
 }
 
-function addLog(message) {
+function addLog(message, options = {}) {
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   state.logs.unshift({ time, message });
   if (state.logs.length > 36) {
     state.logs.length = 36;
+  }
+  if (options.persist !== false) {
+    saveDirty = true;
   }
   uiDirty = true;
 }
@@ -715,7 +817,7 @@ function unlockAges() {
     addLog(`${AGES[state.ageIndex].name} unlocked.`);
     applyAgeReward(AGES[state.ageIndex].reward);
     flashStatus(`${AGES[state.ageIndex].name} reached.`);
-    uiDirty = true;
+    markStateDirty();
   }
 }
 
@@ -723,7 +825,7 @@ function applyAgeReward(reward) {
   for (const [resource, amount] of Object.entries(reward || {})) {
     state.resources[resource] = (state.resources[resource] || 0) + amount;
   }
-  invalidateFrameCache();
+  markStateDirty({ ui: false });
 }
 
 function checkVictory() {
@@ -787,10 +889,32 @@ function runProductionStep(dt, resourcesRef, lifetimeRef, mods = null) {
 }
 
 function tick(dt) {
+  const beforeAge = state.ageIndex;
+  const beforeResources = {};
+  const beforeLifetime = {};
+  for (const resource of RESOURCE_ORDER) {
+    beforeResources[resource] = state.resources[resource];
+    beforeLifetime[resource] = state.lifetime[resource];
+  }
+
   const mods = getModifiers();
   runProductionStep(dt, state.resources, state.lifetime, mods);
   unlockAges();
-  invalidateFrameCache();
+  let changed = beforeAge !== state.ageIndex;
+  if (!changed) {
+    for (const resource of RESOURCE_ORDER) {
+      if (
+        state.resources[resource] !== beforeResources[resource] ||
+        state.lifetime[resource] !== beforeLifetime[resource]
+      ) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  if (changed) {
+    markStateDirty({ ui: false });
+  }
 
   if (checkVictory() && !state.victoryDismissed) {
     victoryBanner.classList.remove("hidden");
@@ -815,7 +939,7 @@ function manualAction(actionId, options = {}) {
   applyCosts(action.costs || {});
   state.resources[action.resource] = (state.resources[action.resource] || 0) + gain;
   state.lifetime[action.resource] = (state.lifetime[action.resource] || 0) + gain;
-  invalidateFrameCache();
+  markStateDirty({ ui: false });
   return { success: true, gain, resource: action.resource };
 }
 
@@ -834,8 +958,7 @@ function buyBuilding(buildingId) {
   applyCosts(cost);
   state.buildings[building.id] += 1;
   addLog(`${building.name} built (${state.buildings[building.id]}).`);
-  invalidateFrameCache();
-  uiDirty = true;
+  markStateDirty();
 }
 
 function buyUpgrade(upgradeId) {
@@ -852,8 +975,7 @@ function buyUpgrade(upgradeId) {
   applyCosts(upgrade.cost);
   state.upgrades.push(upgrade.id);
   addLog(`Upgrade complete: ${upgrade.name}.`);
-  invalidateFrameCache();
-  uiDirty = true;
+  markStateDirty();
 }
 
 function triggerSceneHotspot(hotspotId) {
@@ -880,7 +1002,7 @@ function triggerSceneHotspot(hotspotId) {
     const bonus = Math.max(1, result.gain * 0.6);
     state.resources[result.resource] += bonus;
     state.lifetime[result.resource] += bonus;
-    invalidateFrameCache();
+    markStateDirty({ ui: false });
     addLog(`${hotspot.label} discovery: +${formatNumber(bonus)} ${RESOURCES[result.resource].label}.`);
     worldStatus.textContent = `Discovery at ${hotspot.label}: +${formatNumber(bonus)} ${RESOURCES[result.resource].label}`;
   } else {
@@ -899,7 +1021,15 @@ function formatNumber(value) {
 
   if (abs < 1000) {
     const small = abs >= 100 ? abs.toFixed(0) : abs.toFixed(1);
-    return sign + Number(small).toLocaleString();
+    const cacheKey = `s:${sign}${small}`;
+    if (numberFormatCache.has(cacheKey)) {
+      return numberFormatCache.get(cacheKey);
+    }
+
+    const formatted = sign + Number(small).toLocaleString();
+    numberFormatCache.set(cacheKey, formatted);
+    ensureFormatCacheCapacity();
+    return formatted;
   }
 
   const suffixes = ["K", "M", "B", "T", "Qa"];
@@ -910,23 +1040,55 @@ function formatNumber(value) {
     unitIndex += 1;
   }
 
-  return `${sign}${display.toFixed(display >= 100 ? 0 : 1)}${suffixes[unitIndex]}`;
+  const compact = display.toFixed(display >= 100 ? 0 : 1);
+  const cacheKey = `l:${sign}${compact}${suffixes[unitIndex]}`;
+  if (numberFormatCache.has(cacheKey)) {
+    return numberFormatCache.get(cacheKey);
+  }
+
+  const formatted = `${sign}${compact}${suffixes[unitIndex]}`;
+  numberFormatCache.set(cacheKey, formatted);
+  ensureFormatCacheCapacity();
+  return formatted;
 }
 
 function formatCosts(costs) {
+  let key = "c:";
+  for (const resource of RESOURCE_ORDER) {
+    const amount = costs?.[resource] || 0;
+    if (amount) {
+      key += `${resource}:${amount};`;
+    }
+  }
+
+  if (stringFormatCache.has(key)) {
+    return stringFormatCache.get(key);
+  }
+
   const entries = [];
   for (const resource of RESOURCE_ORDER) {
-    const amount = costs[resource];
+    const amount = costs?.[resource];
     if (amount) {
       entries.push(`${formatNumber(amount)} ${RESOURCES[resource].label}`);
     }
   }
-  return entries.join(" | ");
+  const result = entries.join(" | ");
+  stringFormatCache.set(key, result);
+  ensureFormatCacheCapacity();
+  return result;
 }
 
 function formatPerSecond(value) {
+  const cacheKey = `ps:${value}`;
+  if (stringFormatCache.has(cacheKey)) {
+    return stringFormatCache.get(cacheKey);
+  }
+
   const sign = value >= 0 ? "+" : "";
-  return `${sign}${formatNumber(value)}/s`;
+  const result = `${sign}${formatNumber(value)}/s`;
+  stringFormatCache.set(cacheKey, result);
+  ensureFormatCacheCapacity();
+  return result;
 }
 
 function renderHeader() {
@@ -1295,23 +1457,51 @@ function renderHeavy() {
 }
 
 function render(forceHeavy = false) {
+  const dynamicStart = performance.now();
   renderDynamic();
+  perfStats.dynamicMs += performance.now() - dynamicStart;
+
   if (forceHeavy || uiDirty) {
+    const heavyStart = performance.now();
     renderHeavy();
+    perfStats.heavyMs += performance.now() - heavyStart;
     uiDirty = false;
   }
+
+  perfStats.frames += 1;
 }
 
 function flashStatus(message) {
   clearTimeout(statusTimer);
   saveStatus.textContent = message;
   statusTimer = setTimeout(() => {
-    saveStatus.textContent = "Autosave every 15s";
+    saveStatus.textContent = "Autosave every 15s (dirty only)";
   }, 2200);
+}
+
+function migrateSavePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const current = { ...payload };
+  const version = Number.isInteger(current.version) ? current.version : 1;
+
+  if (version < 2) {
+    if (!Array.isArray(current.logs)) {
+      current.logs = [];
+    }
+    current.victoryDismissed = Boolean(current.victoryDismissed);
+    current.version = 2;
+  }
+
+  return current;
 }
 
 function saveGame(silent = false) {
   const payload = {
+    version: SAVE_VERSION,
+    savedAt: Date.now(),
     resources: state.resources,
     lifetime: state.lifetime,
     buildings: state.buildings,
@@ -1323,6 +1513,8 @@ function saveGame(silent = false) {
 
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+    saveDirty = false;
+    latestAutoSaveAt = performance.now();
     if (!silent) {
       flashStatus("Saved.");
     }
@@ -1340,7 +1532,10 @@ function loadGame() {
       return;
     }
 
-    const parsed = JSON.parse(raw);
+    const parsed = migrateSavePayload(JSON.parse(raw));
+    if (!parsed) {
+      return;
+    }
     const fresh = createInitialState();
 
     for (const resource of RESOURCE_ORDER) {
@@ -1374,10 +1569,12 @@ function loadGame() {
     fresh.victoryDismissed = Boolean(parsed.victoryDismissed);
     state = fresh;
     lastRenderedAge = -1;
-    invalidateFrameCache();
-    addLog("Save loaded.");
+    markStateDirty();
+    addLog("Save loaded.", { persist: false });
+    saveDirty = false;
+    latestAutoSaveAt = performance.now();
   } catch (error) {
-    addLog("Save file could not be loaded.");
+    addLog("Save file could not be loaded.", { persist: false });
   }
 }
 
@@ -1390,7 +1587,7 @@ function resetGame() {
   localStorage.removeItem(SAVE_KEY);
   state = createInitialState();
   lastRenderedAge = -1;
-  invalidateFrameCache();
+  markStateDirty();
   addLog("A fresh civilization begins.");
   victoryBanner.classList.add("hidden");
   render();
@@ -1406,9 +1603,16 @@ function gameLoop(timestamp) {
   autosaveAccumulator += dt;
   heavyAccumulator += dt;
 
+  const simStart = performance.now();
+  let simSteps = 0;
   while (simulationAccumulator >= SIMULATION_STEP) {
     tick(SIMULATION_STEP);
     simulationAccumulator -= SIMULATION_STEP;
+    simSteps += 1;
+  }
+  if (simSteps > 0) {
+    perfStats.simMs += performance.now() - simStart;
+    perfStats.simSteps += simSteps;
   }
 
   if (heavyAccumulator >= HEAVY_RENDER_INTERVAL) {
@@ -1421,11 +1625,14 @@ function gameLoop(timestamp) {
     renderAccumulator = 0;
   }
 
-  if (autosaveAccumulator >= 15) {
-    saveGame(true);
+  if (autosaveAccumulator >= AUTOSAVE_INTERVAL) {
+    if (saveDirty) {
+      saveGame(true);
+    }
     autosaveAccumulator = 0;
   }
 
+  updatePerfStats(timestamp);
   requestAnimationFrame(gameLoop);
 }
 
@@ -1479,6 +1686,13 @@ document.addEventListener("pointerdown", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "F3") {
+    setPerfHudEnabled(!perfStats.enabled);
+    flashStatus(perfStats.enabled ? "Performance HUD enabled." : "Performance HUD disabled.");
+    event.preventDefault();
+    return;
+  }
+
   if (event.key !== "Enter" && event.key !== " ") {
     return;
   }
@@ -1508,6 +1722,7 @@ resetBtn.addEventListener("click", () => {
 dismissVictory.addEventListener("click", () => {
   state.victoryDismissed = true;
   victoryBanner.classList.add("hidden");
+  markStateDirty({ ui: false });
 });
 
 loadGame();
