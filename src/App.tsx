@@ -166,7 +166,7 @@ export default function App(): JSX.Element {
     <div className="app-shell">
       <header className="topbar panel">
         <div>
-          <p className="kicker">Autochess Command Node</p>
+          <p className="kicker">Autochess Command Node | Live Sync</p>
           <h1>Sector Run</h1>
           <p className="muted">
             Roll shop, field your roster, then command engagements with tactical RTS calls.
