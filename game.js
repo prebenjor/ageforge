@@ -428,12 +428,19 @@ const INITIAL_RESOURCES = {
 let state = createInitialState();
 let statusTimer;
 let lastFrame = performance.now();
+let simulationAccumulator = 0;
 let renderAccumulator = 0;
 let autosaveAccumulator = 0;
 let heavyAccumulator = 0;
 let lastRenderedAge = -1;
 const sceneCooldownUntil = {};
 let uiDirty = true;
+let frameCache = null;
+
+const SIMULATION_STEP = 0.05;
+const MAX_SIMULATION_CATCHUP = 0.4;
+const DYNAMIC_RENDER_INTERVAL = 1 / 30;
+const HEAVY_RENDER_INTERVAL = 0.4;
 
 const resourceGrid = document.getElementById("resource-grid");
 const actionsList = document.getElementById("actions-list");
@@ -455,6 +462,22 @@ const saveStatus = document.getElementById("save-status");
 const victoryBanner = document.getElementById("victory-banner");
 const dismissVictory = document.getElementById("dismiss-victory");
 
+const viewCache = {
+  keys: {
+    resources: "",
+    actions: "",
+    buildings: "",
+    upgrades: "",
+    scene: "",
+    timeline: ""
+  },
+  resources: new Map(),
+  actions: new Map(),
+  buildings: new Map(),
+  upgrades: new Map(),
+  hotspots: new Map()
+};
+
 function createInitialState() {
   const buildings = {};
   for (const building of BUILDINGS) {
@@ -470,6 +493,35 @@ function createInitialState() {
     logs: [],
     victoryDismissed: false
   };
+}
+
+function invalidateFrameCache() {
+  frameCache = null;
+}
+
+function buildVisibleActions(ageIndex = state.ageIndex) {
+  return MANUAL_ACTIONS.filter((action) => isActionVisible(action, ageIndex));
+}
+
+function buildVisibleBuildings(ageIndex = state.ageIndex) {
+  return BUILDINGS.filter((building) => ageIndex >= building.unlockAge);
+}
+
+function buildVisibleResources(ageIndex = state.ageIndex) {
+  return RESOURCE_ORDER.filter((resource) => ageIndex >= RESOURCES[resource].unlockAge);
+}
+
+function buildAvailableUpgrades(ageIndex = state.ageIndex, owned = state.upgrades) {
+  const ownedSet = new Set(owned);
+  return UPGRADES.filter((upgrade) => ageIndex >= upgrade.unlockAge && !ownedSet.has(upgrade.id));
+}
+
+function createEmptyRates() {
+  const rates = {};
+  for (const resource of RESOURCE_ORDER) {
+    rates[resource] = 0;
+  }
+  return rates;
 }
 
 function mapAllResources(initialValue) {
@@ -490,10 +542,10 @@ function isActionVisible(action, ageIndex = state.ageIndex) {
   return true;
 }
 
-function getManualGain(action, gainMult = 1) {
-  const mods = getModifiers();
+function getManualGain(action, gainMult = 1, mods = null) {
+  const useMods = mods || ensureFrameCache().mods;
   const ageManualBonus = 1 + state.ageIndex * 0.04;
-  return action.gain * (mods.manualMult[action.resource] || 1) * ageManualBonus * gainMult;
+  return action.gain * (useMods.manualMult[action.resource] || 1) * ageManualBonus * gainMult;
 }
 
 function getCurrentScene() {
@@ -541,6 +593,48 @@ function getModifiers() {
   }
 
   return mods;
+}
+
+function calculateRatesPerSecond(mods) {
+  const preview = { ...state.resources };
+  const before = { ...preview };
+  runProductionStep(1, preview, null, mods);
+
+  const rates = createEmptyRates();
+  for (const resource of RESOURCE_ORDER) {
+    rates[resource] = (preview[resource] || 0) - (before[resource] || 0);
+  }
+  return rates;
+}
+
+function ensureFrameCache() {
+  if (frameCache) {
+    return frameCache;
+  }
+
+  const mods = getModifiers();
+  const rates = calculateRatesPerSecond(mods);
+  const visibleActions = buildVisibleActions();
+  const visibleBuildings = buildVisibleBuildings();
+  const visibleResources = buildVisibleResources();
+  const availableUpgrades = buildAvailableUpgrades();
+
+  const actionGains = {};
+  for (const action of visibleActions) {
+    actionGains[action.id] = getManualGain(action, 1, mods);
+  }
+
+  frameCache = {
+    mods,
+    rates,
+    visibleActions,
+    visibleBuildings,
+    visibleResources,
+    availableUpgrades,
+    actionGains
+  };
+
+  return frameCache;
 }
 
 function multiplyInto(target, changes) {
@@ -629,6 +723,7 @@ function applyAgeReward(reward) {
   for (const [resource, amount] of Object.entries(reward || {})) {
     state.resources[resource] = (state.resources[resource] || 0) + amount;
   }
+  invalidateFrameCache();
 }
 
 function checkVictory() {
@@ -638,8 +733,8 @@ function checkVictory() {
   return requirementsMet(VICTORY_TARGET);
 }
 
-function runProductionStep(dt, resourcesRef, lifetimeRef) {
-  const mods = getModifiers();
+function runProductionStep(dt, resourcesRef, lifetimeRef, mods = null) {
+  const useMods = mods || getModifiers();
 
   for (const building of BUILDINGS) {
     if (state.ageIndex < building.unlockAge) {
@@ -651,7 +746,7 @@ function runProductionStep(dt, resourcesRef, lifetimeRef) {
       continue;
     }
 
-    const consumeMult = mods.buildingConsumeMult[building.id] || 1;
+    const consumeMult = useMods.buildingConsumeMult[building.id] || 1;
     let utilization = 1;
 
     for (const [resource, ratePerSecond] of Object.entries(building.consumes || {})) {
@@ -673,14 +768,14 @@ function runProductionStep(dt, resourcesRef, lifetimeRef) {
     }
 
     for (const [resource, ratePerSecond] of Object.entries(building.produces || {})) {
-      const buildingMult = mods.buildingOutputMult[building.id] || 1;
+      const buildingMult = useMods.buildingOutputMult[building.id] || 1;
       const gain =
         ratePerSecond *
         count *
         dt *
-        mods.globalOutputMult *
+        useMods.globalOutputMult *
         buildingMult *
-        (mods.resourceMult[resource] || 1) *
+        (useMods.resourceMult[resource] || 1) *
         utilization;
 
       resourcesRef[resource] = (resourcesRef[resource] || 0) + gain;
@@ -691,21 +786,11 @@ function runProductionStep(dt, resourcesRef, lifetimeRef) {
   }
 }
 
-function getRatesPerSecond() {
-  const preview = { ...state.resources };
-  const before = { ...preview };
-  runProductionStep(1, preview, null);
-
-  const rates = {};
-  for (const resource of RESOURCE_ORDER) {
-    rates[resource] = (preview[resource] || 0) - (before[resource] || 0);
-  }
-  return rates;
-}
-
 function tick(dt) {
-  runProductionStep(dt, state.resources, state.lifetime);
+  const mods = getModifiers();
+  runProductionStep(dt, state.resources, state.lifetime, mods);
   unlockAges();
+  invalidateFrameCache();
 
   if (checkVictory() && !state.victoryDismissed) {
     victoryBanner.classList.remove("hidden");
@@ -730,6 +815,7 @@ function manualAction(actionId, options = {}) {
   applyCosts(action.costs || {});
   state.resources[action.resource] = (state.resources[action.resource] || 0) + gain;
   state.lifetime[action.resource] = (state.lifetime[action.resource] || 0) + gain;
+  invalidateFrameCache();
   return { success: true, gain, resource: action.resource };
 }
 
@@ -748,6 +834,7 @@ function buyBuilding(buildingId) {
   applyCosts(cost);
   state.buildings[building.id] += 1;
   addLog(`${building.name} built (${state.buildings[building.id]}).`);
+  invalidateFrameCache();
   uiDirty = true;
 }
 
@@ -765,6 +852,7 @@ function buyUpgrade(upgradeId) {
   applyCosts(upgrade.cost);
   state.upgrades.push(upgrade.id);
   addLog(`Upgrade complete: ${upgrade.name}.`);
+  invalidateFrameCache();
   uiDirty = true;
 }
 
@@ -792,6 +880,7 @@ function triggerSceneHotspot(hotspotId) {
     const bonus = Math.max(1, result.gain * 0.6);
     state.resources[result.resource] += bonus;
     state.lifetime[result.resource] += bonus;
+    invalidateFrameCache();
     addLog(`${hotspot.label} discovery: +${formatNumber(bonus)} ${RESOURCES[result.resource].label}.`);
     worldStatus.textContent = `Discovery at ${hotspot.label}: +${formatNumber(bonus)} ${RESOURCES[result.resource].label}`;
   } else {
@@ -865,41 +954,82 @@ function renderHeader() {
   goalText.textContent = `Unlock ${nextAge.name}: ${parts.join(" | ")}`;
 }
 
-function renderResources(rates) {
-  const visibleResources = RESOURCE_ORDER.filter(
-    (resource) => state.ageIndex >= RESOURCES[resource].unlockAge
-  );
+function renderResources(frame) {
+  const resourcesKey = frame.visibleResources.join("|");
+  if (viewCache.keys.resources !== resourcesKey) {
+    viewCache.keys.resources = resourcesKey;
+    viewCache.resources.clear();
+    resourceGrid.textContent = "";
 
-  resourceGrid.innerHTML = visibleResources
-    .map((resource) => {
-      return `
-        <article class="resource-card">
-          <div class="resource-head">
-            <span class="resource-name">${RESOURCES[resource].label}</span>
-            <span class="resource-value">${formatNumber(state.resources[resource])}</span>
-          </div>
-          <p class="resource-rate">${formatPerSecond(rates[resource] || 0)}</p>
-        </article>
-      `;
-    })
-    .join("");
+    const fragment = document.createDocumentFragment();
+    for (const resource of frame.visibleResources) {
+      const card = document.createElement("article");
+      card.className = "resource-card";
+
+      const head = document.createElement("div");
+      head.className = "resource-head";
+
+      const name = document.createElement("span");
+      name.className = "resource-name";
+      name.textContent = RESOURCES[resource].label;
+
+      const value = document.createElement("span");
+      value.className = "resource-value";
+
+      head.append(name, value);
+
+      const rate = document.createElement("p");
+      rate.className = "resource-rate";
+
+      card.append(head, rate);
+      fragment.appendChild(card);
+      viewCache.resources.set(resource, { value, rate });
+    }
+
+    resourceGrid.appendChild(fragment);
+  }
+
+  for (const resource of frame.visibleResources) {
+    const refs = viewCache.resources.get(resource);
+    if (!refs) {
+      continue;
+    }
+
+    refs.value.textContent = formatNumber(state.resources[resource]);
+    refs.rate.textContent = formatPerSecond(frame.rates[resource] || 0);
+  }
 }
 
-function renderActions() {
-  const visibleActions = MANUAL_ACTIONS.filter((action) => isActionVisible(action));
+function renderActions(frame) {
+  const actionsKey = frame.visibleActions.map((action) => action.id).join("|");
+  if (viewCache.keys.actions !== actionsKey) {
+    viewCache.keys.actions = actionsKey;
+    viewCache.actions.clear();
+    actionsList.textContent = "";
 
-  actionsList.innerHTML = visibleActions
-    .map((action) => {
-      const gain = getManualGain(action);
-      const costs = action.costs ? ` | Cost: ${formatCosts(action.costs)}` : "";
-      const disabled = canAfford(action.costs || {}) ? "" : "disabled";
-      return `
-        <button data-action="${action.id}" ${disabled}>
-          ${action.label}: +${formatNumber(gain)} ${RESOURCES[action.resource].label}${costs}
-        </button>
-      `;
-    })
-    .join("");
+    const fragment = document.createDocumentFragment();
+    for (const action of frame.visibleActions) {
+      const button = document.createElement("button");
+      button.dataset.action = action.id;
+      fragment.appendChild(button);
+      viewCache.actions.set(action.id, { button, action });
+    }
+
+    actionsList.appendChild(fragment);
+  }
+
+  for (const action of frame.visibleActions) {
+    const refs = viewCache.actions.get(action.id);
+    if (!refs) {
+      continue;
+    }
+
+    const gain = frame.actionGains[action.id] || 0;
+    const costsText = action.costs ? ` | Cost: ${formatCosts(action.costs)}` : "";
+    refs.button.textContent =
+      `${action.label}: +${formatNumber(gain)} ${RESOURCES[action.resource].label}${costsText}`;
+    refs.button.disabled = !canAfford(action.costs || {});
+  }
 }
 
 function describeBuildingRates(building, mods) {
@@ -923,62 +1053,124 @@ function describeBuildingRates(building, mods) {
   return consumes ? `${produces} (${consumes})` : produces;
 }
 
-function renderBuildings() {
-  const mods = getModifiers();
-  const visibleBuildings = BUILDINGS.filter((building) => state.ageIndex >= building.unlockAge);
-  if (!visibleBuildings.length) {
-    buildingsList.innerHTML = "<p class='meta'>No buildings yet.</p>";
-    return;
+function renderBuildings(frame) {
+  const buildingsKey = frame.visibleBuildings.map((building) => building.id).join("|");
+  if (viewCache.keys.buildings !== buildingsKey) {
+    viewCache.keys.buildings = buildingsKey;
+    viewCache.buildings.clear();
+    buildingsList.textContent = "";
+
+    if (!frame.visibleBuildings.length) {
+      const empty = document.createElement("p");
+      empty.className = "meta";
+      empty.textContent = "No buildings yet.";
+      buildingsList.appendChild(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const building of frame.visibleBuildings) {
+      const card = document.createElement("article");
+      card.className = "card";
+
+      const top = document.createElement("div");
+      top.className = "card-top";
+      const title = document.createElement("h3");
+      title.textContent = building.name;
+      const count = document.createElement("p");
+      top.append(title, count);
+
+      const desc = document.createElement("p");
+      desc.textContent = building.description;
+
+      const rates = document.createElement("p");
+      rates.className = "meta";
+
+      const costs = document.createElement("p");
+      costs.className = "meta";
+
+      const button = document.createElement("button");
+      button.dataset.build = building.id;
+      button.textContent = "Build";
+
+      card.append(top, desc, rates, costs, button);
+      fragment.appendChild(card);
+      viewCache.buildings.set(building.id, { count, rates, costs, button, building });
+    }
+
+    buildingsList.appendChild(fragment);
   }
 
-  buildingsList.innerHTML = visibleBuildings
-    .map((building) => {
-      const cost = calculateBuildingCost(building);
-      const canBuy = canAfford(cost);
-      return `
-        <article class="card">
-          <div class="card-top">
-            <h3>${building.name}</h3>
-            <p>x${state.buildings[building.id]}</p>
-          </div>
-          <p>${building.description}</p>
-          <p class="meta">${describeBuildingRates(building, mods)}</p>
-          <p class="meta">Cost: ${formatCosts(cost)}</p>
-          <button data-build="${building.id}" ${canBuy ? "" : "disabled"}>Build</button>
-        </article>
-      `;
-    })
-    .join("");
+  for (const building of frame.visibleBuildings) {
+    const refs = viewCache.buildings.get(building.id);
+    if (!refs) {
+      continue;
+    }
+
+    const cost = calculateBuildingCost(building);
+    refs.count.textContent = `x${state.buildings[building.id]}`;
+    refs.rates.textContent = describeBuildingRates(building, frame.mods);
+    refs.costs.textContent = `Cost: ${formatCosts(cost)}`;
+    refs.button.disabled = !canAfford(cost);
+  }
 }
 
-function renderUpgrades() {
-  const available = UPGRADES.filter(
-    (upgrade) => state.ageIndex >= upgrade.unlockAge && !state.upgrades.includes(upgrade.id)
-  );
+function renderUpgrades(frame) {
+  const upgradesKey = frame.availableUpgrades.map((upgrade) => upgrade.id).join("|");
+  if (viewCache.keys.upgrades !== upgradesKey) {
+    viewCache.keys.upgrades = upgradesKey;
+    viewCache.upgrades.clear();
+    upgradesList.textContent = "";
 
-  if (!available.length) {
-    upgradesList.innerHTML = "<p class='meta'>No available upgrades in this age.</p>";
-    return;
+    if (!frame.availableUpgrades.length) {
+      const empty = document.createElement("p");
+      empty.className = "meta";
+      empty.textContent = "No available upgrades in this age.";
+      upgradesList.appendChild(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const upgrade of frame.availableUpgrades) {
+      const card = document.createElement("article");
+      card.className = "card";
+
+      const top = document.createElement("div");
+      top.className = "card-top";
+      const title = document.createElement("h3");
+      title.textContent = upgrade.name;
+      top.appendChild(title);
+
+      const desc = document.createElement("p");
+      desc.textContent = upgrade.description;
+
+      const cost = document.createElement("p");
+      cost.className = "meta";
+
+      const button = document.createElement("button");
+      button.dataset.upgrade = upgrade.id;
+      button.textContent = "Research";
+
+      card.append(top, desc, cost, button);
+      fragment.appendChild(card);
+      viewCache.upgrades.set(upgrade.id, { cost, button, upgrade });
+    }
+
+    upgradesList.appendChild(fragment);
   }
 
-  upgradesList.innerHTML = available
-    .map((upgrade) => {
-      const canBuy = canAfford(upgrade.cost);
-      return `
-        <article class="card">
-          <div class="card-top">
-            <h3>${upgrade.name}</h3>
-          </div>
-          <p>${upgrade.description}</p>
-          <p class="meta">Cost: ${formatCosts(upgrade.cost)}</p>
-          <button data-upgrade="${upgrade.id}" ${canBuy ? "" : "disabled"}>Research</button>
-        </article>
-      `;
-    })
-    .join("");
+  for (const upgrade of frame.availableUpgrades) {
+    const refs = viewCache.upgrades.get(upgrade.id);
+    if (!refs) {
+      continue;
+    }
+
+    refs.cost.textContent = `Cost: ${formatCosts(upgrade.cost)}`;
+    refs.button.disabled = !canAfford(upgrade.cost);
+  }
 }
 
-function renderWorldScene() {
+function renderWorldScene(frame) {
   const scene = getCurrentScene();
   worldTitle.textContent = scene.title;
   worldCaption.textContent = scene.caption;
@@ -989,52 +1181,90 @@ function renderWorldScene() {
     lastRenderedAge = state.ageIndex;
   }
 
-  worldScene.innerHTML = scene.hotspots
-    .map((hotspot) => {
+  const visibleHotspots = scene.hotspots.filter((hotspot) => {
+    const action = MANUAL_ACTION_BY_ID[hotspot.actionId];
+    return action && isActionVisible(action);
+  });
+
+  const sceneKey = `${state.ageIndex}|${visibleHotspots.map((hotspot) => hotspot.id).join("|")}`;
+  if (viewCache.keys.scene !== sceneKey) {
+    viewCache.keys.scene = sceneKey;
+    viewCache.hotspots.clear();
+    worldScene.textContent = "";
+
+    const fragment = document.createDocumentFragment();
+    for (const hotspot of visibleHotspots) {
       const action = MANUAL_ACTION_BY_ID[hotspot.actionId];
-      if (!action || !isActionVisible(action)) {
-        return "";
-      }
+      const button = document.createElement("button");
+      button.className = "hotspot";
+      button.dataset.hotspot = hotspot.id;
+      button.style.left = `${hotspot.x}%`;
+      button.style.top = `${hotspot.y}%`;
 
-      const cooldown = getHotspotCooldownRemaining(hotspot.id);
-      const disabled = cooldown > 0 || !canAfford(action.costs || {});
-      const gain = getManualGain(action, hotspot.gainMult);
-      const cooldownText = cooldown > 0 ? `${cooldown.toFixed(1)}s` : `${formatNumber(gain)} gain`;
+      const name = document.createElement("span");
+      name.className = "hotspot-name";
+      name.textContent = hotspot.label;
 
-      return `
-        <button
-          class="hotspot ${cooldown > 0 ? "cooldown" : ""}"
-          data-hotspot="${hotspot.id}"
-          style="left:${hotspot.x}%; top:${hotspot.y}%;"
-          ${disabled ? "disabled" : ""}
-        >
-          <span class="hotspot-name">${hotspot.label}</span>
-          <span class="hotspot-meta">${action.label}</span>
-          <span class="hotspot-meta">${cooldownText}</span>
-        </button>
-      `;
-    })
-    .join("");
+      const actionLabel = document.createElement("span");
+      actionLabel.className = "hotspot-meta";
+      actionLabel.textContent = action.label;
+
+      const gainLabel = document.createElement("span");
+      gainLabel.className = "hotspot-meta";
+
+      button.append(name, actionLabel, gainLabel);
+      fragment.appendChild(button);
+      viewCache.hotspots.set(hotspot.id, { button, gainLabel, hotspot, action });
+    }
+
+    worldScene.appendChild(fragment);
+  }
+
+  for (const hotspot of visibleHotspots) {
+    const refs = viewCache.hotspots.get(hotspot.id);
+    if (!refs) {
+      continue;
+    }
+
+    const cooldown = getHotspotCooldownRemaining(hotspot.id);
+    const gain = getManualGain(refs.action, hotspot.gainMult, frame.mods);
+    refs.gainLabel.textContent = cooldown > 0 ? `${cooldown.toFixed(1)}s` : `${formatNumber(gain)} gain`;
+    refs.button.disabled = cooldown > 0 || !canAfford(refs.action.costs || {});
+    refs.button.classList.toggle("cooldown", cooldown > 0);
+  }
 }
 
 function renderTimeline() {
-  timelineList.innerHTML = AGES.map((age, index) => {
-    const classes =
-      index < state.ageIndex ? "past" : index === state.ageIndex ? "current" : "future";
+  const timelineKey = String(state.ageIndex);
+  if (viewCache.keys.timeline === timelineKey) {
+    return;
+  }
+
+  viewCache.keys.timeline = timelineKey;
+  timelineList.textContent = "";
+  const fragment = document.createDocumentFragment();
+
+  for (let index = 0; index < AGES.length; index += 1) {
+    const age = AGES[index];
+    const classes = index < state.ageIndex ? "past" : index === state.ageIndex ? "current" : "future";
+    const item = document.createElement("li");
+    item.className = classes;
+
     if (index === 0) {
-      return `<li class="${classes}">${age.name}</li>`;
+      item.textContent = age.name;
+    } else if (index > state.ageIndex + 1) {
+      item.textContent = `${age.name} - ???`;
+    } else {
+      const req = Object.entries(age.requirements)
+        .map(([resource, amount]) => `${RESOURCES[resource].label} ${formatNumber(amount)}`)
+        .join(" | ");
+      item.textContent = `${age.name} - ${req}`;
     }
 
-    if (index > state.ageIndex + 1) {
-      return `<li class="${classes}">${age.name} - ???</li>`;
-    }
+    fragment.appendChild(item);
+  }
 
-    const req = Object.entries(age.requirements)
-      .map(([resource, amount]) => `${RESOURCES[resource].label} ${formatNumber(amount)}`)
-      .join(" | ");
-
-    return `<li class="${classes}">${age.name} - ${req}</li>`;
-  }).join("");
+  timelineList.appendChild(fragment);
 }
 
 function renderEventLog() {
@@ -1049,16 +1279,17 @@ function renderEventLog() {
 }
 
 function renderDynamic() {
-  const rates = getRatesPerSecond();
+  const frame = ensureFrameCache();
   renderHeader();
-  renderResources(rates);
+  renderResources(frame);
 }
 
 function renderHeavy() {
-  renderWorldScene();
-  renderActions();
-  renderBuildings();
-  renderUpgrades();
+  const frame = ensureFrameCache();
+  renderWorldScene(frame);
+  renderActions(frame);
+  renderBuildings(frame);
+  renderUpgrades(frame);
   renderTimeline();
   renderEventLog();
 }
@@ -1143,6 +1374,7 @@ function loadGame() {
     fresh.victoryDismissed = Boolean(parsed.victoryDismissed);
     state = fresh;
     lastRenderedAge = -1;
+    invalidateFrameCache();
     addLog("Save loaded.");
   } catch (error) {
     addLog("Save file could not be loaded.");
@@ -1158,6 +1390,7 @@ function resetGame() {
   localStorage.removeItem(SAVE_KEY);
   state = createInitialState();
   lastRenderedAge = -1;
+  invalidateFrameCache();
   addLog("A fresh civilization begins.");
   victoryBanner.classList.add("hidden");
   render();
@@ -1165,20 +1398,25 @@ function resetGame() {
 }
 
 function gameLoop(timestamp) {
-  const dt = Math.min(0.25, (timestamp - lastFrame) / 1000);
+  const dt = Math.min(MAX_SIMULATION_CATCHUP, (timestamp - lastFrame) / 1000);
   lastFrame = timestamp;
 
-  tick(dt);
+  simulationAccumulator += dt;
   renderAccumulator += dt;
   autosaveAccumulator += dt;
   heavyAccumulator += dt;
 
-  if (heavyAccumulator >= 0.35) {
+  while (simulationAccumulator >= SIMULATION_STEP) {
+    tick(SIMULATION_STEP);
+    simulationAccumulator -= SIMULATION_STEP;
+  }
+
+  if (heavyAccumulator >= HEAVY_RENDER_INTERVAL) {
     uiDirty = true;
     heavyAccumulator = 0;
   }
 
-  if (renderAccumulator >= 0.08) {
+  if (renderAccumulator >= DYNAMIC_RENDER_INTERVAL) {
     render(false);
     renderAccumulator = 0;
   }
