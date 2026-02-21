@@ -1,23 +1,34 @@
-# Ageforge
+# Ageforge Command Front
 
-A browser incremental game that progresses through:
-- Neolithic Age
-- Bronze Age
-- Classical Age
-- Medieval Age
-- Industrial Age
-- Modern Age
-- Futuristic Age
+Ageforge is now a `Vite + React + TypeScript + Phaser` game prototype that blends:
 
-## Run
+- incremental economy progression across historical ages
+- autobattler army composition
+- light RTS command abilities during combat (`Rally`, `Retreat`, `Overdrive`)
 
-Open `index.html` in a browser.
+## Development
 
-## How to play
+```bash
+npm install
+npm run dev
+```
 
-- Use **Actions** to gather resources manually.
-- Use the **World Scene** hotspots for boosted manual actions with cooldowns.
-- Buy **Buildings** for passive production.
-- Buy **Upgrades** to multiply output and efficiency.
-- Hit age requirements (shown in the header) to unlock new ages.
-- Save is automatic every 15 seconds and can be triggered manually.
+## Build
+
+```bash
+npm run build
+npm run preview
+```
+
+## Gameplay Loop (Current Prototype)
+
+1. Gather resources and build structures in the **build phase**.
+2. Train units to fill your roster.
+3. Start a battle in the Phaser theater.
+4. Issue RTS commands while units auto-fight.
+5. Win sectors and battles to accelerate progression to later ages.
+
+## Deploy
+
+GitHub Pages deployment is configured in `.github/workflows/pages.yml`.
+Pushes to `main` run `npm ci`, `npm run build`, and publish `dist/`.
