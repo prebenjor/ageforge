@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGES,
   COMMAND_COOLDOWNS,
   FORMATIONS,
-  PREP_ACTIONS_PER_CYCLE,
+  MAX_LEVEL,
   PREP_OPERATIONS,
   RESOURCE_LABELS,
   RESOURCE_ORDER,
   UNIT_CONFIGS,
+  XP_PURCHASE_COST,
+  XP_PURCHASE_GAIN,
   computeBattleModifiers,
-  getUnitCapByAge
+  getStageThreatLabel,
+  getUnitCapByLevel,
+  getXpRequiredForLevel
 } from "./game/config";
 import { getVisibleResources, useGameStore } from "./game/store";
 import type { CommandKind, ResourceKey } from "./game/types";
@@ -53,13 +56,16 @@ export default function App(): JSX.Element {
   const phaserGameRef = useRef<{ destroy: (removeCanvas: boolean, noReturn?: boolean) => void } | null>(null);
   const [sceneReady, setSceneReady] = useState(false);
 
-  const ageIndex = useGameStore((state) => state.ageIndex);
+  const stage = useGameStore((state) => state.stage);
+  const level = useGameStore((state) => state.level);
+  const xp = useGameStore((state) => state.xp);
+  const commanderHp = useGameStore((state) => state.commanderHp);
   const resources = useGameStore((state) => state.resources);
-  const rates = useGameStore((state) => state.rates);
   const army = useGameStore((state) => state.army);
+  const shop = useGameStore((state) => state.shop);
+  const shopLocked = useGameStore((state) => state.shopLocked);
   const formation = useGameStore((state) => state.formation);
-  const prepActionsRemaining = useGameStore((state) => state.prepActionsRemaining);
-  const usedOperations = useGameStore((state) => state.usedOperations);
+  const directiveUsed = useGameStore((state) => state.directiveUsed);
   const battleBuff = useGameStore((state) => state.battleBuff);
   const phase = useGameStore((state) => state.phase);
   const battleTimer = useGameStore((state) => state.battleTimer);
@@ -68,14 +74,17 @@ export default function App(): JSX.Element {
   const pendingTargetCommand = useGameStore((state) => state.pendingTargetCommand);
   const logs = useGameStore((state) => state.logs);
   const lastReport = useGameStore((state) => state.lastReport);
-  const lifetime = useGameStore((state) => state.lifetime);
+  const winStreak = useGameStore((state) => state.winStreak);
+  const loseStreak = useGameStore((state) => state.loseStreak);
   const dirty = useGameStore((state) => state.dirty);
 
-  const trainUnit = useGameStore((state) => state.trainUnit);
+  const refreshShop = useGameStore((state) => state.refreshShop);
+  const toggleShopLock = useGameStore((state) => state.toggleShopLock);
+  const buyShopUnit = useGameStore((state) => state.buyShopUnit);
+  const buyXp = useGameStore((state) => state.buyXp);
   const disbandUnit = useGameStore((state) => state.disbandUnit);
   const setFormation = useGameStore((state) => state.setFormation);
   const runPrepOperation = useGameStore((state) => state.runPrepOperation);
-  const passPrepAction = useGameStore((state) => state.passPrepAction);
   const beginTargetingCommand = useGameStore((state) => state.beginTargetingCommand);
   const cancelTargetingCommand = useGameStore((state) => state.cancelTargetingCommand);
   const startBattle = useGameStore((state) => state.startBattle);
@@ -143,116 +152,145 @@ export default function App(): JSX.Element {
     };
   }, []);
 
-  const visibleResources = useMemo(() => getVisibleResources(ageIndex), [ageIndex]);
-  const visibleUnits = useMemo(() => UNIT_CONFIGS.filter((unit) => ageIndex >= unit.unlockAge), [ageIndex]);
-  const nextAge = ageIndex < AGES.length - 1 ? AGES[ageIndex + 1] : null;
-
-  const progress = useMemo(() => {
-    if (!nextAge) {
-      return 1;
-    }
-    const entries = Object.entries(nextAge.requirements);
-    if (!entries.length) {
-      return 1;
-    }
-    let sum = 0;
-    for (const [resource, amount] of entries) {
-      const key = resource as ResourceKey;
-      sum += Math.min(1, lifetime[key] / (amount ?? 1));
-    }
-    return sum / entries.length;
-  }, [lifetime, nextAge]);
-
+  const visibleResources = useMemo(() => getVisibleResources(), []);
   const armyCount = Object.values(army).reduce((sum, value) => sum + value, 0);
-  const unitCap = getUnitCapByAge(ageIndex);
+  const unitCap = getUnitCapByLevel(level);
   const battleMods = useMemo(() => computeBattleModifiers(army, formation), [army, formation]);
   const activePrepNotes = battleBuff.notes;
   const commandCooldownLeft = (kind: CommandKind): number => Math.max(0, Math.ceil(commandReadyAt[kind] - worldTime));
+  const xpToNext = getXpRequiredForLevel(level);
+  const xpProgress = level >= MAX_LEVEL ? 1 : xpToNext > 0 ? Math.min(1, xp / xpToNext) : 0;
+  const threat = getStageThreatLabel(stage);
 
   return (
     <div className="app-shell">
       <header className="topbar panel">
         <div>
-          <p className="kicker">Ageforge Command Front</p>
-          <h1>{AGES[ageIndex].name}</h1>
+          <p className="kicker">Autochess Command Node</p>
+          <h1>Sector Run</h1>
           <p className="muted">
-            Run prep operations, commit your formation, then command autobattler battles with RTS calls.
+            Roll shop, field your roster, then command engagements with tactical RTS calls.
           </p>
         </div>
         <div className="topbar-actions">
           <button onClick={() => saveNow()}>Save</button>
-          <button onClick={() => reset()}>Reset</button>
+          <button onClick={() => reset()}>Reset Run</button>
         </div>
       </header>
 
       <section className="panel progress-panel">
+        <div className="status-grid">
+          <article className="status-chip">
+            <span className="muted">Stage</span>
+            <strong>{stage}</strong>
+          </article>
+          <article className="status-chip">
+            <span className="muted">Threat</span>
+            <strong>{threat}</strong>
+          </article>
+          <article className="status-chip">
+            <span className="muted">Command Lv</span>
+            <strong>{level}</strong>
+          </article>
+          <article className="status-chip">
+            <span className="muted">Commander HP</span>
+            <strong>{commanderHp}%</strong>
+          </article>
+          <article className="status-chip">
+            <span className="muted">Streak</span>
+            <strong>{`${winStreak}W / ${loseStreak}L`}</strong>
+          </article>
+        </div>
         <div className="progress-head">
-          <span>{nextAge ? `Next: ${nextAge.name}` : "Final age unlocked"}</span>
-          <span>{Math.round(progress * 100)}%</span>
+          <span>{level >= MAX_LEVEL ? "Max command level reached" : `XP ${format(xp)}/${format(xpToNext)}`}</span>
+          <span>{Math.round(xpProgress * 100)}%</span>
         </div>
         <div className="progress-rail">
-          <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
+          <div className="progress-fill" style={{ width: `${xpProgress * 100}%` }} />
         </div>
-        {nextAge && (
-          <p className="muted">
-            {Object.entries(nextAge.requirements)
-              .map(([resource, need]) => {
-                const key = resource as ResourceKey;
-                return `${RESOURCE_LABELS[key]} ${format(lifetime[key])}/${format(need ?? 0)}`;
-              })
-              .join(" | ")}
-          </p>
-        )}
       </section>
 
       <main className="layout">
         <section className="panel column">
-          <h2>War Room</h2>
+          <h2>Economy</h2>
           <div className="resource-grid">
             {visibleResources.map((resource) => (
               <article key={resource} className="resource-card">
                 <p className="muted">{RESOURCE_LABELS[resource]}</p>
                 <p className="value">{format(resources[resource])}</p>
-                <p className="muted">{`${rates[resource] >= 0 ? "+" : ""}${format(rates[resource])}/s (passive disabled)`}</p>
               </article>
             ))}
           </div>
+          <div className="row controls">
+            <button disabled={phase !== "build" || resources.credits < 2} onClick={() => refreshShop()}>
+              Refresh Shop (-2)
+            </button>
+            <button disabled={phase !== "build" || level >= MAX_LEVEL || resources.credits < XP_PURCHASE_COST} onClick={() => buyXp()}>
+              Buy XP (+{XP_PURCHASE_GAIN})
+            </button>
+            <button disabled={phase !== "build"} onClick={() => toggleShopLock()}>
+              {shopLocked ? "Unlock Shop" : "Lock Shop"}
+            </button>
+          </div>
 
-          <h3>Preparation Operations</h3>
-          <p className="muted">{`Prep actions remaining: ${prepActionsRemaining}/${PREP_ACTIONS_PER_CYCLE}`}</p>
+          <h3>Shop</h3>
           <div className="stack">
-            {PREP_OPERATIONS.map((operation) => {
-              const used = usedOperations.includes(operation.id);
+            {shop.map((unitId, slotIndex) => {
+              if (!unitId) {
+                return (
+                  <article key={`empty-${slotIndex}`} className="card">
+                    <div className="row">
+                      <strong>Empty Slot</strong>
+                      <span>#{slotIndex + 1}</span>
+                    </div>
+                  </article>
+                );
+              }
+              const unit = UNIT_CONFIGS.find((entry) => entry.id === unitId);
+              if (!unit) {
+                return null;
+              }
               return (
-                <article key={operation.id} className="card">
+                <article key={`${unitId}-${slotIndex}`} className="card">
                   <div className="row">
-                    <strong>{operation.name}</strong>
-                    <span>{used ? "Used" : "Ready"}</span>
+                    <strong>{unit.name}</strong>
+                    <span>{`Tier ${unit.tier}`}</span>
                   </div>
-                  <p className="muted">{operation.description}</p>
-                  <p className="muted">
-                    {operation.resourceGain ? `Gain: ${costLabel(operation.resourceGain)}.` : "No direct resource gain."}
-                    {operation.note ? ` ${operation.note}` : ""}
-                  </p>
+                  <p className="muted">{`${unit.role} | Trait ${unit.trait}`}</p>
+                  <p className="muted">{`Cost: ${costLabel(unit.cost)}`}</p>
                   <button
-                    disabled={phase !== "build" || prepActionsRemaining <= 0 || used}
-                    onClick={() => runPrepOperation(operation.id)}
+                    disabled={phase !== "build" || !canAfford(resources, unit.cost) || armyCount >= unitCap}
+                    onClick={() => buyShopUnit(slotIndex)}
                   >
-                    Execute Operation
+                    Deploy From Shop
                   </button>
                 </article>
               );
             })}
-            <button disabled={phase !== "build" || prepActionsRemaining <= 0} onClick={() => passPrepAction()}>
-              Hold Position (consume prep point)
-            </button>
+          </div>
+
+          <h3>Tactical Directive</h3>
+          <div className="stack">
+            {PREP_OPERATIONS.map((operation) => (
+              <article key={operation.id} className="card">
+                <div className="row">
+                  <strong>{operation.name}</strong>
+                  <span>{directiveUsed ? "Used" : "Ready"}</span>
+                </div>
+                <p className="muted">{operation.description}</p>
+                {operation.note && <p className="muted">{operation.note}</p>}
+                <button disabled={phase !== "build" || directiveUsed} onClick={() => runPrepOperation(operation.id)}>
+                  Prime Directive
+                </button>
+              </article>
+            ))}
           </div>
         </section>
 
         <section className="panel battle-column">
           <div className="row">
-            <h2>Battle Theater</h2>
-            <span className={`phase-chip ${phase}`}>{phase === "battle" ? `${Math.ceil(battleTimer)}s` : "Build"}</span>
+            <h2>Battlefield</h2>
+            <span className={`phase-chip ${phase}`}>{phase === "battle" ? `${Math.ceil(battleTimer)}s` : "Prep"}</span>
           </div>
           <div className={`scene-wrap ${pendingTargetCommand === "rally" ? "targeting" : ""}`}>
             <div ref={sceneRef} className="scene-host" />
@@ -264,11 +302,8 @@ export default function App(): JSX.Element {
           </div>
 
           <div className="row controls">
-            <button
-              disabled={phase === "battle" || armyCount === 0 || prepActionsRemaining > 0}
-              onClick={() => startBattle()}
-            >
-              Start Battle
+            <button disabled={phase === "battle" || armyCount === 0 || commanderHp <= 0} onClick={() => startBattle()}>
+              Start Stage Battle
             </button>
             <button
               disabled={phase !== "battle" || (pendingTargetCommand !== "rally" && worldTime < commandReadyAt.rally)}
@@ -294,16 +329,17 @@ export default function App(): JSX.Element {
             </button>
           </div>
 
-          {phase === "build" && prepActionsRemaining > 0 && (
-            <p className="muted">{`Spend ${prepActionsRemaining} more prep action(s) before launching battle.`}</p>
-          )}
-          <p className="muted">RTS command cooldowns: Rally {COMMAND_COOLDOWNS.rally}s, Retreat {COMMAND_COOLDOWNS.retreat}s, Overdrive {COMMAND_COOLDOWNS.overdrive}s.</p>
+          <p className="muted">
+            RTS cooldowns: Rally {COMMAND_COOLDOWNS.rally}s, Retreat {COMMAND_COOLDOWNS.retreat}s, Overdrive{" "}
+            {COMMAND_COOLDOWNS.overdrive}s.
+          </p>
           <p className="report">{lastReport}</p>
         </section>
 
         <section className="panel column">
-          <h2>Army</h2>
-          <p className="muted">Units {armyCount}/{unitCap}</p>
+          <h2>Roster</h2>
+          <p className="muted">Deployed Units {armyCount}/{unitCap}</p>
+
           <h3>Formation</h3>
           <div className="formation-grid">
             {FORMATIONS.map((option) => (
@@ -318,6 +354,7 @@ export default function App(): JSX.Element {
               </button>
             ))}
           </div>
+
           <div className="card">
             <strong>Active Modifiers</strong>
             <ul className="mods-list">
@@ -328,8 +365,9 @@ export default function App(): JSX.Element {
               )}
             </ul>
           </div>
+
           <div className="stack">
-            {visibleUnits.map((unit) => {
+            {UNIT_CONFIGS.map((unit) => {
               const count = army[unit.id] ?? 0;
               return (
                 <article key={unit.id} className="card">
@@ -338,17 +376,15 @@ export default function App(): JSX.Element {
                     <span>x{count}</span>
                   </div>
                   <p className="muted">
-                    {unit.role} | HP {unit.hp} | DMG {unit.damage} | RNG {unit.range}
+                    {`Tier ${unit.tier} | ${unit.role} | Trait ${unit.trait}`}
+                  </p>
+                  <p className="muted">
+                    HP {unit.hp} | DMG {unit.damage} | RNG {unit.range} | SPD {unit.speed}
                   </p>
                   <p className="muted">Cost: {costLabel(unit.cost)}</p>
-                  <div className="row">
-                    <button disabled={!canAfford(resources, unit.cost) || armyCount >= unitCap} onClick={() => trainUnit(unit.id)}>
-                      Train
-                    </button>
-                    <button disabled={count <= 0 || phase === "battle"} onClick={() => disbandUnit(unit.id)}>
-                      Disband
-                    </button>
-                  </div>
+                  <button disabled={count <= 0 || phase === "battle"} onClick={() => disbandUnit(unit.id)}>
+                    Sell
+                  </button>
                 </article>
               );
             })}

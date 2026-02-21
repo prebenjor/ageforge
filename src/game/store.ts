@@ -1,30 +1,29 @@
 import { create } from "zustand";
 import {
-  AGES,
   BASE_BATTLE_BUFF,
   COMMAND_COOLDOWNS,
   FORMATIONS,
   INITIAL_RESOURCES,
-  MANUAL_ACTIONS,
-  PREP_ACTIONS_PER_CYCLE,
+  MAX_LEVEL,
   PREP_OPERATIONS,
   RESOURCE_LABELS,
   RESOURCE_ORDER,
-  RESOURCE_UNLOCK_AGE,
-  STRUCTURES,
+  SHOP_ODDS_BY_LEVEL,
+  SHOP_SIZE,
   UNIT_CONFIGS,
+  UNIT_POOL_BY_TIER,
+  XP_PURCHASE_COST,
+  XP_PURCHASE_GAIN,
   createResourceMap,
-  getUnitCapByAge
+  getUnitCapByLevel,
+  getXpRequiredForLevel
 } from "./config";
-import type { BattleCommand, BattleResult, CommandKind, FormationId, ResourceKey, Resources } from "./types";
-import type { BattleBuff } from "./types";
+import type { BattleBuff, BattleCommand, BattleResult, CommandKind, FormationId, ResourceKey, Resources } from "./types";
 
-const SAVE_KEY = "ageforge-v2-save";
-const SAVE_VERSION = 1;
+const SAVE_KEY = "ageforge-v3-save";
+const SAVE_VERSION = 3;
 
-const structureById = Object.fromEntries(STRUCTURES.map((item) => [item.id, item]));
 const unitById = Object.fromEntries(UNIT_CONFIGS.map((item) => [item.id, item]));
-const actionById = Object.fromEntries(MANUAL_ACTIONS.map((item) => [item.id, item]));
 const formationById = Object.fromEntries(FORMATIONS.map((item) => [item.id, item]));
 const operationById = Object.fromEntries(PREP_OPERATIONS.map((item) => [item.id, item]));
 
@@ -34,12 +33,17 @@ export interface GameState {
   resources: Resources;
   lifetime: Resources;
   rates: Resources;
-  ageIndex: number;
-  structures: Record<string, number>;
+  stage: number;
+  level: number;
+  xp: number;
+  commanderHp: number;
+  winStreak: number;
+  loseStreak: number;
   army: Record<string, number>;
+  shop: Array<string | null>;
+  shopLocked: boolean;
   formation: FormationId;
-  prepActionsRemaining: number;
-  usedOperations: string[];
+  directiveUsed: boolean;
   battleBuff: BattleBuff;
   phase: Phase;
   battleNonce: number;
@@ -52,13 +56,14 @@ export interface GameState {
   lastReport: string;
   dirty: boolean;
   loaded: boolean;
-  manualAction: (actionId: string) => void;
-  buildStructure: (structureId: string) => void;
+  refreshShop: (isFree?: boolean) => void;
+  toggleShopLock: () => void;
+  buyShopUnit: (slotIndex: number) => void;
+  buyXp: () => void;
   trainUnit: (unitId: string) => void;
   disbandUnit: (unitId: string) => void;
   setFormation: (formationId: FormationId) => void;
   runPrepOperation: (operationId: string) => void;
-  passPrepAction: () => void;
   beginTargetingCommand: (kind: CommandKind) => void;
   cancelTargetingCommand: () => void;
   issueCommand: (kind: CommandKind, target?: { x: number; y: number }) => void;
@@ -72,7 +77,7 @@ export interface GameState {
 
 function addLog(logs: string[], message: string): string[] {
   const next = [`${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${message}`, ...logs];
-  return next.slice(0, 50);
+  return next.slice(0, 60);
 }
 
 function canAfford(resources: Resources, cost?: Partial<Resources>): boolean {
@@ -97,55 +102,17 @@ function applyCost(resources: Resources, cost?: Partial<Resources>): Resources {
   return next;
 }
 
-function addGain(resources: Resources, lifetime: Resources, gain: Partial<Resources>, scale = 1): [Resources, Resources] {
+function addGain(resources: Resources, lifetime: Resources, gain: Partial<Resources>): [Resources, Resources] {
   const nextResources = { ...resources };
   const nextLifetime = { ...lifetime };
   for (const resource of RESOURCE_ORDER) {
-    const amount = (gain[resource] ?? 0) * scale;
-    if (amount === 0) {
+    const amount = gain[resource] ?? 0;
+    if (!amount) {
       continue;
     }
     nextResources[resource] += amount;
     if (amount > 0) {
       nextLifetime[resource] += amount;
-    }
-  }
-  return [nextResources, nextLifetime];
-}
-
-function calculateStructureCost(structureId: string, count: number): Partial<Resources> {
-  const config = structureById[structureId];
-  const output: Partial<Resources> = {};
-  for (const resource of RESOURCE_ORDER) {
-    const base = config.baseCost[resource];
-    if (!base) {
-      continue;
-    }
-    output[resource] = Math.ceil(base * Math.pow(config.costScale, count));
-  }
-  return output;
-}
-
-function requirementsMet(lifetime: Resources, requirements: Partial<Resources>): boolean {
-  return RESOURCE_ORDER.every((resource) => (lifetime[resource] ?? 0) >= (requirements[resource] ?? 0));
-}
-
-function calculateRates(state: Pick<GameState, "structures" | "resources" | "ageIndex" | "phase">): Resources {
-  void state;
-  return createResourceMap(0);
-}
-
-function applyRates(resources: Resources, lifetime: Resources, rates: Resources, dt: number): [Resources, Resources] {
-  const nextResources = { ...resources };
-  const nextLifetime = { ...lifetime };
-  for (const resource of RESOURCE_ORDER) {
-    const delta = rates[resource] * dt;
-    if (delta === 0) {
-      continue;
-    }
-    nextResources[resource] = Math.max(0, nextResources[resource] + delta);
-    if (delta > 0) {
-      nextLifetime[resource] += delta;
     }
   }
   return [nextResources, nextLifetime];
@@ -159,33 +126,102 @@ function emptyCountsFromList(list: Array<{ id: string }>): Record<string, number
   return record;
 }
 
+function getTotalArmyCount(army: Record<string, number>): number {
+  return Object.values(army).reduce((sum, value) => sum + value, 0);
+}
+
+function getXpProgress(level: number, xp: number): { level: number; xp: number; leveled: number } {
+  let nextLevel = level;
+  let nextXp = xp;
+  let leveled = 0;
+
+  while (nextLevel < MAX_LEVEL) {
+    const needed = getXpRequiredForLevel(nextLevel);
+    if (needed <= 0 || nextXp < needed) {
+      break;
+    }
+    nextXp -= needed;
+    nextLevel += 1;
+    leveled += 1;
+  }
+
+  if (nextLevel >= MAX_LEVEL) {
+    nextXp = 0;
+  }
+
+  return { level: nextLevel, xp: nextXp, leveled };
+}
+
+function pickTierFromOdds(level: number): 1 | 2 | 3 | 4 {
+  const odds = SHOP_ODDS_BY_LEVEL[Math.max(1, Math.min(MAX_LEVEL, level))];
+  const roll = Math.random();
+  const tier2Cutoff = odds.tier1 + odds.tier2;
+  const tier3Cutoff = tier2Cutoff + odds.tier3;
+  if (roll < odds.tier1) {
+    return 1;
+  }
+  if (roll < tier2Cutoff) {
+    return 2;
+  }
+  if (roll < tier3Cutoff) {
+    return 3;
+  }
+  return 4;
+}
+
+function rollShop(level: number): Array<string | null> {
+  const slots: Array<string | null> = [];
+  for (let i = 0; i < SHOP_SIZE; i += 1) {
+    const tier = pickTierFromOdds(level);
+    const pool = UNIT_POOL_BY_TIER[tier];
+    if (!pool.length) {
+      slots.push(null);
+      continue;
+    }
+    slots.push(pool[Math.floor(Math.random() * pool.length)]);
+  }
+  return slots;
+}
+
 function serializeState(state: GameState): object {
   return {
     version: SAVE_VERSION,
     resources: state.resources,
     lifetime: state.lifetime,
-    ageIndex: state.ageIndex,
-    structures: state.structures,
+    stage: state.stage,
+    level: state.level,
+    xp: state.xp,
+    commanderHp: state.commanderHp,
+    winStreak: state.winStreak,
+    loseStreak: state.loseStreak,
     army: state.army,
+    shop: state.shop,
+    shopLocked: state.shopLocked,
     formation: state.formation,
-    prepActionsRemaining: state.prepActionsRemaining,
-    usedOperations: state.usedOperations,
+    directiveUsed: state.directiveUsed,
     battleBuff: state.battleBuff,
     logs: state.logs,
     lastReport: state.lastReport
   };
 }
 
+const initialShop = rollShop(1);
+
 export const useGameStore = create<GameState>((set, get) => ({
   resources: { ...INITIAL_RESOURCES },
   lifetime: createResourceMap(0),
   rates: createResourceMap(0),
-  ageIndex: 0,
-  structures: emptyCountsFromList(STRUCTURES),
+  stage: 1,
+  level: 1,
+  xp: 0,
+  commanderHp: 100,
+  winStreak: 0,
+  loseStreak: 0,
   army: emptyCountsFromList(UNIT_CONFIGS),
+  shop: [...initialShop],
+  shopLocked: false,
   formation: "line",
-  prepActionsRemaining: PREP_ACTIONS_PER_CYCLE,
-  usedOperations: [],
+  directiveUsed: false,
   battleBuff: { ...BASE_BATTLE_BUFF },
   phase: "build",
   battleNonce: 0,
@@ -194,41 +230,87 @@ export const useGameStore = create<GameState>((set, get) => ({
   commandQueue: [],
   commandCooldownReadyAt: { rally: 0, retreat: 0, overdrive: 0 },
   pendingTargetCommand: null,
-  logs: ["Settlement command initialized."],
-  lastReport: "No battles yet.",
+  logs: ["Command uplink active."],
+  lastReport: "No rounds completed.",
   dirty: true,
   loaded: false,
 
-  manualAction: (actionId) => {
+  refreshShop: (isFree = false) => {
     const state = get();
-    const action = actionById[actionId];
-    if (!action || state.ageIndex < action.unlockAge) {
+    if (state.phase !== "build") {
       return;
     }
-    if (!canAfford(state.resources, action.cost)) {
+    const refreshCost = isFree ? 0 : 2;
+    if (!isFree && state.resources.credits < refreshCost) {
       return;
     }
-    let nextResources = applyCost(state.resources, action.cost);
-    let nextLifetime = state.lifetime;
-    [nextResources, nextLifetime] = addGain(nextResources, nextLifetime, action.gain);
-    set({ resources: nextResources, lifetime: nextLifetime, dirty: true });
+    const nextResources = isFree ? state.resources : applyCost(state.resources, { credits: refreshCost });
+    set({
+      resources: nextResources,
+      shop: rollShop(state.level),
+      logs: addLog(state.logs, isFree ? "Shop synchronized." : `Shop refreshed (-${refreshCost} credits).`),
+      dirty: true
+    });
   },
 
-  buildStructure: (structureId) => {
+  toggleShopLock: () => {
     const state = get();
-    const structure = structureById[structureId];
-    if (!structure || state.ageIndex < structure.unlockAge) {
-      return;
-    }
-    const owned = state.structures[structureId] ?? 0;
-    const cost = calculateStructureCost(structureId, owned);
-    if (!canAfford(state.resources, cost)) {
+    if (state.phase !== "build") {
       return;
     }
     set({
-      resources: applyCost(state.resources, cost),
-      structures: { ...state.structures, [structureId]: owned + 1 },
-      logs: addLog(state.logs, `${structure.name} built.`),
+      shopLocked: !state.shopLocked,
+      logs: addLog(state.logs, state.shopLocked ? "Shop unlocked." : "Shop locked for next round."),
+      dirty: true
+    });
+  },
+
+  buyShopUnit: (slotIndex) => {
+    const state = get();
+    if (state.phase !== "build") {
+      return;
+    }
+    const unitId = state.shop[slotIndex];
+    if (!unitId) {
+      return;
+    }
+    const config = unitById[unitId];
+    if (!config || !canAfford(state.resources, config.cost)) {
+      return;
+    }
+    const unitCap = getUnitCapByLevel(state.level);
+    if (getTotalArmyCount(state.army) >= unitCap) {
+      return;
+    }
+    const nextShop = [...state.shop];
+    nextShop[slotIndex] = null;
+    set({
+      resources: applyCost(state.resources, config.cost),
+      army: { ...state.army, [unitId]: (state.army[unitId] ?? 0) + 1 },
+      shop: nextShop,
+      logs: addLog(state.logs, `${config.name} deployed from shop.`),
+      dirty: true
+    });
+  },
+
+  buyXp: () => {
+    const state = get();
+    if (state.phase !== "build" || state.level >= MAX_LEVEL) {
+      return;
+    }
+    if (state.resources.credits < XP_PURCHASE_COST) {
+      return;
+    }
+    const progressed = getXpProgress(state.level, state.xp + XP_PURCHASE_GAIN);
+    const nextLogs =
+      progressed.leveled > 0
+        ? addLog(state.logs, `Command level upgraded to ${progressed.level}.`)
+        : addLog(state.logs, `XP purchased (+${XP_PURCHASE_GAIN}).`);
+    set({
+      resources: applyCost(state.resources, { credits: XP_PURCHASE_COST }),
+      level: progressed.level,
+      xp: progressed.xp,
+      logs: nextLogs,
       dirty: true
     });
   },
@@ -236,30 +318,48 @@ export const useGameStore = create<GameState>((set, get) => ({
   trainUnit: (unitId) => {
     const state = get();
     const config = unitById[unitId];
-    if (!config || state.ageIndex < config.unlockAge) {
+    if (!config || state.phase !== "build") {
       return;
     }
-    const armyCount = Object.values(state.army).reduce((sum, value) => sum + value, 0);
-    if (armyCount >= getUnitCapByAge(state.ageIndex)) {
-      return;
-    }
-    if (!canAfford(state.resources, config.cost)) {
+    const unitCap = getUnitCapByLevel(state.level);
+    if (getTotalArmyCount(state.army) >= unitCap || !canAfford(state.resources, config.cost)) {
       return;
     }
     set({
       resources: applyCost(state.resources, config.cost),
       army: { ...state.army, [unitId]: (state.army[unitId] ?? 0) + 1 },
+      logs: addLog(state.logs, `${config.name} recruited.`),
       dirty: true
     });
   },
 
   disbandUnit: (unitId) => {
     const state = get();
-    const current = state.army[unitId] ?? 0;
-    if (current <= 0 || state.phase === "battle") {
+    if (state.phase === "battle") {
       return;
     }
-    set({ army: { ...state.army, [unitId]: current - 1 }, dirty: true });
+    const current = state.army[unitId] ?? 0;
+    const config = unitById[unitId];
+    if (current <= 0 || !config) {
+      return;
+    }
+
+    const refund: Partial<Resources> = {};
+    for (const resource of RESOURCE_ORDER) {
+      const value = config.cost[resource];
+      if (!value) {
+        continue;
+      }
+      refund[resource] = Math.max(1, Math.floor(value * 0.5));
+    }
+    const [nextResources, nextLifetime] = addGain(state.resources, state.lifetime, refund);
+    set({
+      resources: nextResources,
+      lifetime: nextLifetime,
+      army: { ...state.army, [unitId]: current - 1 },
+      logs: addLog(state.logs, `${config.name} sold.`),
+      dirty: true
+    });
   },
 
   setFormation: (formationId) => {
@@ -273,19 +373,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   runPrepOperation: (operationId) => {
     const state = get();
     const operation = operationById[operationId];
-    if (!operation || state.phase !== "build" || state.prepActionsRemaining <= 0) {
+    if (!operation || state.phase !== "build" || state.directiveUsed) {
       return;
     }
-    if (state.usedOperations.includes(operationId)) {
-      return;
-    }
-
-    let nextResources = state.resources;
-    let nextLifetime = state.lifetime;
-    if (operation.resourceGain) {
-      [nextResources, nextLifetime] = addGain(nextResources, nextLifetime, operation.resourceGain);
-    }
-
     const nextBuff: BattleBuff = {
       ...state.battleBuff,
       allyDamageMult: state.battleBuff.allyDamageMult * (operation.buff?.allyDamageMult ?? 1),
@@ -297,36 +387,17 @@ export const useGameStore = create<GameState>((set, get) => ({
       enemyHpMult: state.battleBuff.enemyHpMult * (operation.buff?.enemyHpMult ?? 1),
       notes: operation.note ? [...state.battleBuff.notes, operation.note] : state.battleBuff.notes
     };
-
     set({
-      resources: nextResources,
-      lifetime: nextLifetime,
+      directiveUsed: true,
       battleBuff: nextBuff,
-      usedOperations: [...state.usedOperations, operationId],
-      prepActionsRemaining: Math.max(0, state.prepActionsRemaining - 1),
-      logs: addLog(state.logs, `${operation.name} executed.`),
-      dirty: true
-    });
-  },
-
-  passPrepAction: () => {
-    const state = get();
-    if (state.phase !== "build" || state.prepActionsRemaining <= 0) {
-      return;
-    }
-    set({
-      prepActionsRemaining: state.prepActionsRemaining - 1,
-      logs: addLog(state.logs, "Preparation point held."),
+      logs: addLog(state.logs, `${operation.name} primed.`),
       dirty: true
     });
   },
 
   beginTargetingCommand: (kind) => {
     const state = get();
-    if (state.phase !== "battle") {
-      return;
-    }
-    if (kind !== "rally") {
+    if (state.phase !== "battle" || kind !== "rally") {
       return;
     }
     const readyAt = state.commandCooldownReadyAt[kind];
@@ -345,11 +416,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (state.phase !== "battle") {
       return;
     }
-
     if (kind === "rally" && !target) {
       return;
     }
-
     const readyAt = state.commandCooldownReadyAt[kind];
     if (state.worldTime < readyAt) {
       return;
@@ -371,20 +440,17 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   startBattle: () => {
     const state = get();
-    const armyCount = Object.values(state.army).reduce((sum, value) => sum + value, 0);
-    if (state.phase === "battle" || armyCount <= 0 || state.prepActionsRemaining > 0) {
+    if (state.phase === "battle" || getTotalArmyCount(state.army) <= 0 || state.commanderHp <= 0) {
       return;
     }
-    const prepSummary = state.battleBuff.notes.length
-      ? ` Prep: ${state.battleBuff.notes.join(" ")}`
-      : "";
+    const prepSummary = state.battleBuff.notes.length ? ` ${state.battleBuff.notes.join(" ")}` : "";
     set({
       phase: "battle",
       battleTimer: 90,
       battleNonce: state.battleNonce + 1,
       commandQueue: [],
       pendingTargetCommand: null,
-      logs: addLog(state.logs, `Battle phase started.${prepSummary}`),
+      logs: addLog(state.logs, `Stage ${state.stage} engagement started.${prepSummary}`),
       dirty: true
     });
   },
@@ -400,66 +466,92 @@ export const useGameStore = create<GameState>((set, get) => ({
       nextArmy[unitId] = Math.max(0, (nextArmy[unitId] ?? 0) - loss);
     }
 
-    let nextResources = state.resources;
-    let nextLifetime = state.lifetime;
+    let resources = state.resources;
+    let lifetime = state.lifetime;
+    let stage = state.stage;
+    let commanderHp = state.commanderHp;
+    let level = state.level;
+    let xp = state.xp;
+    let winStreak = state.winStreak;
+    let loseStreak = state.loseStreak;
+
+    const creditsInterest = Math.min(5, Math.floor(resources.credits / 10));
+    const roundBase = 5 + Math.floor(state.stage / 2);
+
     if (result.victory) {
-      const rewardBase = 120 + state.ageIndex * 65 + result.sectorsHeld * 80;
-      [nextResources, nextLifetime] = addGain(nextResources, nextLifetime, {
-        food: rewardBase,
-        materials: rewardBase * 0.9,
-        knowledge: rewardBase * 0.55,
-        power: state.ageIndex >= 4 ? rewardBase * 0.35 : 0,
-        data: state.ageIndex >= 5 ? rewardBase * 0.2 : 0
+      stage += 1;
+      winStreak += 1;
+      loseStreak = 0;
+      const streakBonus = Math.min(3, Math.floor(winStreak / 2));
+      [resources, lifetime] = addGain(resources, lifetime, {
+        credits: roundBase + creditsInterest + streakBonus,
+        intel: 1 + Math.floor(stage / 4)
+      });
+    } else {
+      loseStreak += 1;
+      winStreak = 0;
+      const chipDamage = 6 + Math.floor(state.stage / 2);
+      commanderHp = Math.max(0, commanderHp - chipDamage);
+      [resources, lifetime] = addGain(resources, lifetime, {
+        credits: 2 + Math.min(3, Math.floor(loseStreak / 2)),
+        intel: 1
       });
     }
 
+    const xpGain = 2;
+    const progressed = getXpProgress(level, xp + xpGain);
+    level = progressed.level;
+    xp = progressed.xp;
+
     const report = result.victory
-      ? `Victory: held ${result.sectorsHeld}/3 sectors and looted new assets.`
-      : `Defeat: ${Object.values(result.casualties).reduce((sum, loss) => sum + loss, 0)} units lost.`;
+      ? `Victory at Stage ${state.stage}. Sectors held: ${result.sectorsHeld}/3. XP +${xpGain}.`
+      : `Defeat at Stage ${state.stage}. Commander integrity ${commanderHp}%. XP +${xpGain}.`;
+
+    const leveledLog =
+      progressed.leveled > 0
+        ? addLog(state.logs, `Command level upgraded to ${level}.`)
+        : state.logs;
+
+    const nextShop = state.shopLocked ? state.shop : rollShop(level);
+    const gameOverLog =
+      commanderHp <= 0
+        ? addLog(addLog(leveledLog, report), "Run terminated. Reset to begin a new command run.")
+        : addLog(leveledLog, report);
 
     set({
       phase: "build",
       battleTimer: 0,
       army: nextArmy,
-      resources: nextResources,
-      lifetime: nextLifetime,
-      prepActionsRemaining: PREP_ACTIONS_PER_CYCLE,
-      usedOperations: [],
+      resources,
+      lifetime,
+      stage,
+      level,
+      xp,
+      commanderHp,
+      winStreak,
+      loseStreak,
+      directiveUsed: false,
       battleBuff: { ...BASE_BATTLE_BUFF },
       commandQueue: [],
       pendingTargetCommand: null,
+      shop: nextShop,
+      shopLocked: state.shopLocked,
       lastReport: report,
-      logs: addLog(state.logs, report),
+      logs: gameOverLog,
       dirty: true
     });
   },
 
   tick: (dt) => {
     const state = get();
-    const rates = calculateRates(state);
-    let resources = state.resources;
-    let lifetime = state.lifetime;
-    let ageIndex = state.ageIndex;
-    while (ageIndex < AGES.length - 1 && requirementsMet(lifetime, AGES[ageIndex + 1].requirements)) {
-      ageIndex += 1;
-    }
-
-    let logs = state.logs;
-    if (ageIndex > state.ageIndex) {
-      logs = addLog(logs, `${AGES[ageIndex].name} reached.`);
-    }
-
+    const rates = createResourceMap(0);
     const nextBattleTimer = state.phase === "battle" ? Math.max(0, state.battleTimer - dt) : 0;
 
     set({
-      resources,
-      lifetime,
       rates,
-      ageIndex,
       battleTimer: nextBattleTimer,
       worldTime: state.worldTime + dt,
-      pendingTargetCommand: state.phase === "battle" ? state.pendingTargetCommand : null,
-      logs
+      pendingTargetCommand: state.phase === "battle" ? state.pendingTargetCommand : null
     });
 
     if (state.phase === "battle" && nextBattleTimer <= 0) {
@@ -478,43 +570,60 @@ export const useGameStore = create<GameState>((set, get) => ({
         version?: number;
         resources?: Partial<Resources>;
         lifetime?: Partial<Resources>;
-        ageIndex?: number;
-        structures?: Record<string, number>;
+        stage?: number;
+        level?: number;
+        xp?: number;
+        commanderHp?: number;
+        winStreak?: number;
+        loseStreak?: number;
         army?: Record<string, number>;
+        shop?: Array<string | null>;
+        shopLocked?: boolean;
         formation?: FormationId;
-        prepActionsRemaining?: number;
-        usedOperations?: string[];
+        directiveUsed?: boolean;
         battleBuff?: Partial<BattleBuff>;
         logs?: string[];
         lastReport?: string;
       };
+
       const resources = { ...INITIAL_RESOURCES };
       const lifetime = createResourceMap(0);
       for (const resource of RESOURCE_ORDER) {
         resources[resource] = Math.max(0, parsed.resources?.[resource] ?? resources[resource]);
         lifetime[resource] = Math.max(0, parsed.lifetime?.[resource] ?? lifetime[resource]);
       }
+
+      const inputLevel = Math.max(1, Math.min(MAX_LEVEL, parsed.level ?? 1));
+      const normalizedXp = Math.max(0, parsed.xp ?? 0);
+      const progressed = getXpProgress(inputLevel, normalizedXp);
+
+      const savedShop = Array.isArray(parsed.shop) ? parsed.shop.slice(0, SHOP_SIZE) : [];
+      while (savedShop.length < SHOP_SIZE) {
+        savedShop.push(null);
+      }
+
       set({
         resources,
         lifetime,
-        ageIndex: Math.max(0, Math.min(AGES.length - 1, parsed.ageIndex ?? 0)),
-        structures: { ...emptyCountsFromList(STRUCTURES), ...(parsed.structures ?? {}) },
+        rates: createResourceMap(0),
+        stage: Math.max(1, parsed.stage ?? 1),
+        level: progressed.level,
+        xp: progressed.xp,
+        commanderHp: Math.max(0, Math.min(100, parsed.commanderHp ?? 100)),
+        winStreak: Math.max(0, parsed.winStreak ?? 0),
+        loseStreak: Math.max(0, parsed.loseStreak ?? 0),
         army: { ...emptyCountsFromList(UNIT_CONFIGS), ...(parsed.army ?? {}) },
+        shop: savedShop,
+        shopLocked: Boolean(parsed.shopLocked),
         formation: formationById[parsed.formation ?? "line"] ? (parsed.formation as FormationId) : "line",
-        prepActionsRemaining: Math.max(
-          0,
-          Math.min(PREP_ACTIONS_PER_CYCLE, parsed.prepActionsRemaining ?? PREP_ACTIONS_PER_CYCLE)
-        ),
-        usedOperations: Array.isArray(parsed.usedOperations)
-          ? parsed.usedOperations.filter((id) => Boolean(operationById[id]))
-          : [],
+        directiveUsed: Boolean(parsed.directiveUsed),
         battleBuff: {
           ...BASE_BATTLE_BUFF,
           ...(parsed.battleBuff ?? {}),
           notes: Array.isArray(parsed.battleBuff?.notes) ? parsed.battleBuff.notes : []
         },
-        logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 50) : ["Save loaded."],
-        lastReport: parsed.lastReport ?? "No battles yet.",
+        logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 60) : ["Save loaded."],
+        lastReport: parsed.lastReport ?? "No rounds completed.",
         pendingTargetCommand: null,
         loaded: true,
         dirty: false
@@ -536,12 +645,17 @@ export const useGameStore = create<GameState>((set, get) => ({
       resources: { ...INITIAL_RESOURCES },
       lifetime: createResourceMap(0),
       rates: createResourceMap(0),
-      ageIndex: 0,
-      structures: emptyCountsFromList(STRUCTURES),
+      stage: 1,
+      level: 1,
+      xp: 0,
+      commanderHp: 100,
+      winStreak: 0,
+      loseStreak: 0,
       army: emptyCountsFromList(UNIT_CONFIGS),
+      shop: rollShop(1),
+      shopLocked: false,
       formation: "line",
-      prepActionsRemaining: PREP_ACTIONS_PER_CYCLE,
-      usedOperations: [],
+      directiveUsed: false,
       battleBuff: { ...BASE_BATTLE_BUFF },
       phase: "build",
       battleNonce: 0,
@@ -550,15 +664,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       commandQueue: [],
       commandCooldownReadyAt: { rally: 0, retreat: 0, overdrive: 0 },
       pendingTargetCommand: null,
-      logs: ["Settlement command reset."],
-      lastReport: "No battles yet.",
+      logs: ["Command uplink reset."],
+      lastReport: "No rounds completed.",
       dirty: true
     });
   }
 }));
 
-export function getVisibleResources(ageIndex: number): ResourceKey[] {
-  return RESOURCE_ORDER.filter((resource) => ageIndex >= RESOURCE_UNLOCK_AGE[resource]);
+export function getVisibleResources(): ResourceKey[] {
+  return RESOURCE_ORDER;
 }
 
 export function formatResourcePair(resource: ResourceKey, value: number): string {

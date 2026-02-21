@@ -82,14 +82,14 @@ export class BattleScene extends Phaser.Scene {
       this.add.line(400, laneY, 40, laneY, 760, laneY, 0x79a5af, 0.08);
     }
 
-    this.statusText = this.add.text(18, 16, "Build phase active.", {
-      fontFamily: "system-ui",
+    this.statusText = this.add.text(18, 16, "Prep phase active.", {
+      fontFamily: "Trebuchet MS",
       fontSize: "14px",
       color: "#d8f3f0"
     });
 
     this.timerText = this.add.text(650, 16, "00:00", {
-      fontFamily: "system-ui",
+      fontFamily: "Trebuchet MS",
       fontSize: "14px",
       color: "#d8f3f0"
     });
@@ -147,7 +147,7 @@ export class BattleScene extends Phaser.Scene {
     this.statusText.setText(
       this.battleBuff.notes.length
         ? this.battleBuff.notes[0]
-        : this.allyMods.labels[0] ?? "Battle started. Hold sectors and break enemy lines."
+        : this.allyMods.labels[0] ?? "Engagement live. Secure sectors and collapse hostiles."
     );
 
     let laneIndex = 0;
@@ -160,7 +160,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     laneIndex = 0;
-    for (const group of getEnemyWave(state.ageIndex)) {
+    for (const group of getEnemyWave(state.stage)) {
       for (let i = 0; i < group.count; i += 1) {
         const y = LANES[laneIndex % LANES.length] + Phaser.Math.Between(-16, 16);
         this.spawnUnit("enemy", group.unitId, 680 + Phaser.Math.Between(-24, 24), y);
@@ -540,7 +540,7 @@ export class BattleScene extends Phaser.Scene {
     this.statusText.setText(
       victory
         ? `Victory. Sector control bonus applied (${sectorsHeld}).`
-        : "Defeat. Rebuild your force and adapt formation."
+        : "Defeat. Recompose roster and revise formation."
     );
     this.statusText.setColor(victory ? "#9bf3de" : "#ffacaa");
 
@@ -548,7 +548,7 @@ export class BattleScene extends Phaser.Scene {
       this.statusText.setColor("#d8f3f0");
       const { resources } = useGameStore.getState();
       this.statusText.setText(
-        `Build phase active. ${RESOURCE_LABELS.food}: ${Math.floor(resources.food)} | ${RESOURCE_LABELS.materials}: ${Math.floor(resources.materials)}`
+        `Prep phase active. ${RESOURCE_LABELS.credits}: ${Math.floor(resources.credits)} | ${RESOURCE_LABELS.intel}: ${Math.floor(resources.intel)}`
       );
       this.clearBattlefield();
     });

@@ -1,12 +1,14 @@
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Exo+2:wght@400;600&display=swap");
+
 :root {
-  --bg: #0b151c;
-  --bg-soft: #11212b;
-  --panel: #152935;
-  --panel-border: #28414d;
-  --text: #e4f0ec;
-  --muted: #94afb4;
-  --accent: #6fd6be;
-  --warn: #ff9f99;
+  --bg: #060c14;
+  --bg-soft: #0c1926;
+  --panel: #102031;
+  --panel-border: #264a63;
+  --text: #dceffb;
+  --muted: #7fa0b9;
+  --accent: #3de7c9;
+  --warn: #ff8d8a;
 }
 
 * {
@@ -21,23 +23,29 @@ body,
 }
 
 body {
-  background: radial-gradient(circle at top right, #17313a, var(--bg));
+  background:
+    radial-gradient(circle at 84% 10%, rgba(34, 86, 110, 0.3), transparent 42%),
+    radial-gradient(circle at 12% 90%, rgba(29, 106, 113, 0.2), transparent 45%),
+    linear-gradient(160deg, #09121d 0%, #050b12 100%);
   color: var(--text);
-  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+  font-family: "Exo 2", "Trebuchet MS", sans-serif;
   padding: 14px;
 }
 
 button {
-  border: 1px solid #2f4f5d;
-  background: linear-gradient(180deg, #1a3643, #152b36);
-  color: #daf5ee;
+  border: 1px solid #2f6a87;
+  background: linear-gradient(180deg, #153146, #102335);
+  color: #dbf7ff;
   border-radius: 10px;
   padding: 8px 10px;
   cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, filter 120ms ease;
 }
 
 button:hover:not(:disabled) {
-  border-color: #69d6b9;
+  border-color: #6af0d7;
+  transform: translateY(-1px);
+  filter: brightness(1.04);
 }
 
 button:disabled {
@@ -60,9 +68,10 @@ h3 {
 
 .panel {
   border: 1px solid var(--panel-border);
-  background: rgba(21, 41, 53, 0.9);
+  background: linear-gradient(180deg, rgba(14, 30, 45, 0.92), rgba(10, 23, 35, 0.92));
   border-radius: 14px;
   padding: 12px;
+  box-shadow: inset 0 0 0 1px rgba(83, 147, 183, 0.09), 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 .topbar {
@@ -76,8 +85,9 @@ h3 {
   margin: 0;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   font-size: 0.75rem;
+  font-family: "Orbitron", sans-serif;
 }
 
 .topbar-actions {
@@ -91,9 +101,37 @@ h3 {
   font-size: 0.88rem;
 }
 
+h1,
+h2,
+h3,
+strong {
+  font-family: "Orbitron", sans-serif;
+  letter-spacing: 0.02em;
+}
+
 .progress-panel {
   display: grid;
   gap: 8px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.status-chip {
+  border: 1px solid #2f5f7b;
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(9, 27, 39, 0.72);
+  display: grid;
+  gap: 4px;
+}
+
+.status-chip strong {
+  font-size: 1rem;
+  color: #ddfbff;
 }
 
 .progress-head {
@@ -105,13 +143,13 @@ h3 {
 .progress-rail {
   height: 10px;
   border-radius: 999px;
-  background: #1f3a46;
+  background: #193446;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #58cdb8, #9af2cf);
+  background: linear-gradient(90deg, #23d7bc, #7bf0e0);
 }
 
 .layout {
@@ -138,10 +176,10 @@ h3 {
 }
 
 .resource-card {
-  border: 1px solid #2f4754;
+  border: 1px solid #2f5a73;
   border-radius: 10px;
   padding: 8px;
-  background: rgba(13, 28, 36, 0.65);
+  background: rgba(8, 24, 35, 0.72);
 }
 
 .value {
@@ -156,10 +194,10 @@ h3 {
 }
 
 .card {
-  border: 1px solid #304f5d;
+  border: 1px solid #2c5974;
   border-radius: 10px;
   padding: 8px;
-  background: rgba(16, 30, 39, 0.6);
+  background: rgba(9, 24, 35, 0.7);
   display: grid;
   gap: 8px;
 }
@@ -174,10 +212,10 @@ h3 {
 .scene-host {
   width: 100%;
   aspect-ratio: 4 / 3;
-  border: 1px solid #345362;
+  border: 1px solid #2f6988;
   border-radius: 12px;
   overflow: hidden;
-  background: #0f1c24;
+  background: #0b1823;
 }
 
 .scene-wrap {
@@ -195,9 +233,9 @@ h3 {
   top: 10px;
   margin: 0;
   font-size: 0.82rem;
-  color: #c9f3e7;
-  background: rgba(13, 31, 38, 0.8);
-  border: 1px solid #325263;
+  color: #cefaff;
+  background: rgba(9, 27, 40, 0.86);
+  border: 1px solid #2b6282;
   border-radius: 8px;
   padding: 5px 8px;
 }
@@ -208,7 +246,7 @@ h3 {
 
 .phase-chip {
   border-radius: 999px;
-  border: 1px solid #3f6b76;
+  border: 1px solid #2b7285;
   padding: 4px 10px;
   font-size: 0.82rem;
 }
@@ -220,9 +258,9 @@ h3 {
 
 .report {
   margin: 0;
-  color: #b8e8dd;
-  background: rgba(20, 41, 52, 0.55);
-  border: 1px solid #2f4f5d;
+  color: #b7efe7;
+  background: rgba(11, 31, 45, 0.72);
+  border: 1px solid #2d5f7a;
   border-radius: 10px;
   padding: 8px;
 }

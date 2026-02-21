@@ -1,36 +1,14 @@
-export type ResourceKey = "food" | "materials" | "knowledge" | "power" | "data";
+export type ResourceKey = "credits" | "intel";
 
 export type Resources = Record<ResourceKey, number>;
-
-export interface AgeConfig {
-  name: string;
-  requirements: Partial<Record<ResourceKey, number>>;
-}
-
-export interface ManualAction {
-  id: string;
-  label: string;
-  unlockAge: number;
-  gain: Partial<Resources>;
-  cost?: Partial<Resources>;
-}
-
-export interface StructureConfig {
-  id: string;
-  name: string;
-  unlockAge: number;
-  baseCost: Partial<Resources>;
-  costScale: number;
-  produces: Partial<Record<ResourceKey, number>>;
-  consumes?: Partial<Record<ResourceKey, number>>;
-}
 
 export type UnitRole = "frontline" | "ranged" | "support" | "siege";
 
 export interface UnitConfig {
   id: string;
   name: string;
-  unlockAge: number;
+  tier: 1 | 2 | 3 | 4;
+  trait: string;
   role: UnitRole;
   cost: Partial<Resources>;
   hp: number;
@@ -85,6 +63,13 @@ export interface PrepOperation {
   resourceGain?: Partial<Resources>;
   buff?: Partial<BattleBuffScalars>;
   note?: string;
+}
+
+export interface ShopOdds {
+  tier1: number;
+  tier2: number;
+  tier3: number;
+  tier4: number;
 }
 
 export interface BattleCommand {
