@@ -3,10 +3,10 @@ import {
   AGES,
   COMMAND_COOLDOWNS,
   FORMATIONS,
-  MANUAL_ACTIONS,
+  PREP_ACTIONS_PER_CYCLE,
+  PREP_OPERATIONS,
   RESOURCE_LABELS,
   RESOURCE_ORDER,
-  STRUCTURES,
   UNIT_CONFIGS,
   computeBattleModifiers,
   getUnitCapByAge
@@ -30,22 +30,6 @@ function format(value: number): string {
     index += 1;
   }
   return `${value < 0 ? "-" : ""}${current.toFixed(current >= 100 ? 0 : 1)}${suffixes[index]}`;
-}
-
-function getStructureCost(structureId: string, count: number): Partial<Record<ResourceKey, number>> {
-  const config = STRUCTURES.find((item) => item.id === structureId);
-  if (!config) {
-    return {};
-  }
-  const cost: Partial<Record<ResourceKey, number>> = {};
-  for (const resource of RESOURCE_ORDER) {
-    const base = config.baseCost[resource];
-    if (!base) {
-      continue;
-    }
-    cost[resource] = Math.ceil(base * Math.pow(config.costScale, count));
-  }
-  return cost;
 }
 
 function canAfford(resources: Record<ResourceKey, number>, cost: Partial<Record<ResourceKey, number>>): boolean {
@@ -72,9 +56,11 @@ export default function App(): JSX.Element {
   const ageIndex = useGameStore((state) => state.ageIndex);
   const resources = useGameStore((state) => state.resources);
   const rates = useGameStore((state) => state.rates);
-  const structures = useGameStore((state) => state.structures);
   const army = useGameStore((state) => state.army);
   const formation = useGameStore((state) => state.formation);
+  const prepActionsRemaining = useGameStore((state) => state.prepActionsRemaining);
+  const usedOperations = useGameStore((state) => state.usedOperations);
+  const battleBuff = useGameStore((state) => state.battleBuff);
   const phase = useGameStore((state) => state.phase);
   const battleTimer = useGameStore((state) => state.battleTimer);
   const worldTime = useGameStore((state) => state.worldTime);
@@ -85,11 +71,11 @@ export default function App(): JSX.Element {
   const lifetime = useGameStore((state) => state.lifetime);
   const dirty = useGameStore((state) => state.dirty);
 
-  const manualAction = useGameStore((state) => state.manualAction);
-  const buildStructure = useGameStore((state) => state.buildStructure);
   const trainUnit = useGameStore((state) => state.trainUnit);
   const disbandUnit = useGameStore((state) => state.disbandUnit);
   const setFormation = useGameStore((state) => state.setFormation);
+  const runPrepOperation = useGameStore((state) => state.runPrepOperation);
+  const passPrepAction = useGameStore((state) => state.passPrepAction);
   const beginTargetingCommand = useGameStore((state) => state.beginTargetingCommand);
   const cancelTargetingCommand = useGameStore((state) => state.cancelTargetingCommand);
   const startBattle = useGameStore((state) => state.startBattle);
@@ -158,14 +144,6 @@ export default function App(): JSX.Element {
   }, []);
 
   const visibleResources = useMemo(() => getVisibleResources(ageIndex), [ageIndex]);
-  const visibleActions = useMemo(
-    () => MANUAL_ACTIONS.filter((action) => ageIndex >= action.unlockAge),
-    [ageIndex]
-  );
-  const visibleStructures = useMemo(
-    () => STRUCTURES.filter((structure) => ageIndex >= structure.unlockAge),
-    [ageIndex]
-  );
   const visibleUnits = useMemo(() => UNIT_CONFIGS.filter((unit) => ageIndex >= unit.unlockAge), [ageIndex]);
   const nextAge = ageIndex < AGES.length - 1 ? AGES[ageIndex + 1] : null;
 
@@ -188,6 +166,7 @@ export default function App(): JSX.Element {
   const armyCount = Object.values(army).reduce((sum, value) => sum + value, 0);
   const unitCap = getUnitCapByAge(ageIndex);
   const battleMods = useMemo(() => computeBattleModifiers(army, formation), [army, formation]);
+  const activePrepNotes = battleBuff.notes;
   const commandCooldownLeft = (kind: CommandKind): number => Math.max(0, Math.ceil(commandReadyAt[kind] - worldTime));
 
   return (
@@ -197,7 +176,7 @@ export default function App(): JSX.Element {
           <p className="kicker">Ageforge Command Front</p>
           <h1>{AGES[ageIndex].name}</h1>
           <p className="muted">
-            Build economy, compose your roster, then command battles with autobattler core and RTS calls.
+            Run prep operations, commit your formation, then command autobattler battles with RTS calls.
           </p>
         </div>
         <div className="topbar-actions">
@@ -228,49 +207,45 @@ export default function App(): JSX.Element {
 
       <main className="layout">
         <section className="panel column">
-          <h2>Economy</h2>
+          <h2>War Room</h2>
           <div className="resource-grid">
             {visibleResources.map((resource) => (
               <article key={resource} className="resource-card">
                 <p className="muted">{RESOURCE_LABELS[resource]}</p>
                 <p className="value">{format(resources[resource])}</p>
-                <p className="muted">{`${rates[resource] >= 0 ? "+" : ""}${format(rates[resource])}/s`}</p>
+                <p className="muted">{`${rates[resource] >= 0 ? "+" : ""}${format(rates[resource])}/s (passive disabled)`}</p>
               </article>
             ))}
           </div>
 
-          <h3>Manual Actions</h3>
+          <h3>Preparation Operations</h3>
+          <p className="muted">{`Prep actions remaining: ${prepActionsRemaining}/${PREP_ACTIONS_PER_CYCLE}`}</p>
           <div className="stack">
-            {visibleActions.map((action) => {
-              const disabled = !canAfford(resources, action.cost ?? {});
+            {PREP_OPERATIONS.map((operation) => {
+              const used = usedOperations.includes(operation.id);
               return (
-                <button key={action.id} disabled={disabled} onClick={() => manualAction(action.id)}>
-                  {action.label}
-                  {` (+${costLabel(action.gain)})`}
-                  {action.cost ? ` | Cost: ${costLabel(action.cost)}` : ""}
-                </button>
-              );
-            })}
-          </div>
-
-          <h3>Structures</h3>
-          <div className="stack">
-            {visibleStructures.map((structure) => {
-              const owned = structures[structure.id] ?? 0;
-              const cost = getStructureCost(structure.id, owned);
-              return (
-                <article key={structure.id} className="card">
+                <article key={operation.id} className="card">
                   <div className="row">
-                    <strong>{structure.name}</strong>
-                    <span>x{owned}</span>
+                    <strong>{operation.name}</strong>
+                    <span>{used ? "Used" : "Ready"}</span>
                   </div>
-                  <p className="muted">Cost: {costLabel(cost)}</p>
-                  <button disabled={!canAfford(resources, cost)} onClick={() => buildStructure(structure.id)}>
-                    Build
+                  <p className="muted">{operation.description}</p>
+                  <p className="muted">
+                    {operation.resourceGain ? `Gain: ${costLabel(operation.resourceGain)}.` : "No direct resource gain."}
+                    {operation.note ? ` ${operation.note}` : ""}
+                  </p>
+                  <button
+                    disabled={phase !== "build" || prepActionsRemaining <= 0 || used}
+                    onClick={() => runPrepOperation(operation.id)}
+                  >
+                    Execute Operation
                   </button>
                 </article>
               );
             })}
+            <button disabled={phase !== "build" || prepActionsRemaining <= 0} onClick={() => passPrepAction()}>
+              Hold Position (consume prep point)
+            </button>
           </div>
         </section>
 
@@ -289,7 +264,10 @@ export default function App(): JSX.Element {
           </div>
 
           <div className="row controls">
-            <button disabled={phase === "battle" || armyCount === 0} onClick={() => startBattle()}>
+            <button
+              disabled={phase === "battle" || armyCount === 0 || prepActionsRemaining > 0}
+              onClick={() => startBattle()}
+            >
               Start Battle
             </button>
             <button
@@ -316,6 +294,9 @@ export default function App(): JSX.Element {
             </button>
           </div>
 
+          {phase === "build" && prepActionsRemaining > 0 && (
+            <p className="muted">{`Spend ${prepActionsRemaining} more prep action(s) before launching battle.`}</p>
+          )}
           <p className="muted">RTS command cooldowns: Rally {COMMAND_COOLDOWNS.rally}s, Retreat {COMMAND_COOLDOWNS.retreat}s, Overdrive {COMMAND_COOLDOWNS.overdrive}s.</p>
           <p className="report">{lastReport}</p>
         </section>
@@ -340,8 +321,8 @@ export default function App(): JSX.Element {
           <div className="card">
             <strong>Active Modifiers</strong>
             <ul className="mods-list">
-              {battleMods.labels.length ? (
-                battleMods.labels.map((label) => <li key={label}>{label}</li>)
+              {battleMods.labels.length || activePrepNotes.length ? (
+                [...battleMods.labels, ...activePrepNotes].map((label) => <li key={label}>{label}</li>)
               ) : (
                 <li>No active bonuses.</li>
               )}

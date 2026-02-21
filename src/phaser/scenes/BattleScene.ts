@@ -1,7 +1,7 @@
 import Phaser from "phaser";
-import { RESOURCE_LABELS, UNIT_CONFIGS, computeBattleModifiers, getEnemyWave } from "../../game/config";
+import { BASE_BATTLE_BUFF, RESOURCE_LABELS, UNIT_CONFIGS, computeBattleModifiers, getEnemyWave } from "../../game/config";
 import { useGameStore } from "../../game/store";
-import type { BattleCommand, BattleModifiers } from "../../game/types";
+import type { BattleBuff, BattleCommand, BattleModifiers } from "../../game/types";
 
 type Team = "ally" | "enemy";
 
@@ -48,6 +48,7 @@ export class BattleScene extends Phaser.Scene {
   private overdriveUntil = 0;
   private startingArmy: Record<string, number> = {};
   private allyMods: BattleModifiers = computeBattleModifiers({}, "line");
+  private battleBuff: BattleBuff = { ...BASE_BATTLE_BUFF };
   private rallyMarker: Phaser.GameObjects.Arc | null = null;
   private running = false;
 
@@ -123,8 +124,13 @@ export class BattleScene extends Phaser.Scene {
     const state = useGameStore.getState();
     this.startingArmy = { ...state.army };
     this.allyMods = computeBattleModifiers(state.army, state.formation);
+    this.battleBuff = { ...BASE_BATTLE_BUFF, ...state.battleBuff };
+    this.battleBuff.notes = [...(state.battleBuff.notes ?? [])];
     if (this.allyMods.labels.length) {
       this.statusText.setText(`Battle started. ${this.allyMods.labels[0]}`);
+    }
+    if (this.battleBuff.notes.length) {
+      this.statusText.setText(this.battleBuff.notes[0]);
     }
 
     const allyStartX = 120;
@@ -197,12 +203,17 @@ export class BattleScene extends Phaser.Scene {
     const speedMult = mods ? mods.speedMult * (mods.speedByRole[role] ?? 1) : 1;
     const rangeMult = mods ? mods.rangeMult * (mods.rangeByRole[role] ?? 1) : 1;
     const cooldownMult = mods ? mods.cooldownMult * (mods.cooldownByRole[role] ?? 1) : 1;
+    const phaseHpMult = team === "ally" ? this.battleBuff.allyHpMult : this.battleBuff.enemyHpMult;
+    const phaseDamageMult = team === "ally" ? this.battleBuff.allyDamageMult : this.battleBuff.enemyDamageMult;
+    const phaseSpeedMult = team === "ally" ? this.battleBuff.allySpeedMult : 1;
+    const phaseRangeMult = team === "ally" ? this.battleBuff.allyRangeMult : 1;
+    const phaseCooldownMult = team === "ally" ? this.battleBuff.allyCooldownMult : 1;
 
-    const maxHp = config.hp * hpMult;
-    const damage = config.damage * damageMult;
-    const speed = config.speed * speedMult;
-    const range = config.range * rangeMult;
-    const cooldown = config.cooldown * cooldownMult;
+    const maxHp = config.hp * hpMult * phaseHpMult;
+    const damage = config.damage * damageMult * phaseDamageMult;
+    const speed = config.speed * speedMult * phaseSpeedMult;
+    const range = config.range * rangeMult * phaseRangeMult;
+    const cooldown = config.cooldown * cooldownMult * phaseCooldownMult;
 
     const color = team === "ally" ? 0x7fe2c5 : 0xf08d8b;
     const body = this.add.circle(x, y, config.radius, color, 0.95).setDepth(10);

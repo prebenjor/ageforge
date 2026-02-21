@@ -1,9 +1,11 @@
 import type {
   AgeConfig,
+  BattleBuff,
   BattleModifiers,
   FormationConfig,
   FormationId,
   ManualAction,
+  PrepOperation,
   ResourceKey,
   Resources,
   StructureConfig,
@@ -210,6 +212,58 @@ export const COMMAND_COOLDOWNS = {
   retreat: 12,
   overdrive: 20
 } as const;
+
+export const PREP_ACTIONS_PER_CYCLE = 3;
+
+export const BASE_BATTLE_BUFF: BattleBuff = {
+  allyDamageMult: 1,
+  allyHpMult: 1,
+  allySpeedMult: 1,
+  allyRangeMult: 1,
+  allyCooldownMult: 1,
+  enemyDamageMult: 1,
+  enemyHpMult: 1,
+  notes: []
+};
+
+export const PREP_OPERATIONS: PrepOperation[] = [
+  {
+    id: "supply-raid",
+    name: "Supply Raid",
+    description: "Launch a short convoy raid to stock the front.",
+    resourceGain: { food: 120, materials: 100 },
+    note: "Operation: front stockpiles increased."
+  },
+  {
+    id: "field-lab",
+    name: "Field Lab",
+    description: "Deploy rapid prototypes and battlefield diagnostics.",
+    resourceGain: { knowledge: 95, data: 24 },
+    buff: { allyDamageMult: 1.08 },
+    note: "Operation: +8% allied damage next battle."
+  },
+  {
+    id: "fortify",
+    name: "Fortify Line",
+    description: "Set hardened cover and layered fallback points.",
+    buff: { allyHpMult: 1.2, enemyDamageMult: 0.95 },
+    note: "Operation: +20% allied HP, enemy damage -5%."
+  },
+  {
+    id: "maneuvers",
+    name: "Maneuver Drills",
+    description: "Train synchronized movements before contact.",
+    buff: { allySpeedMult: 1.16, allyCooldownMult: 0.92 },
+    note: "Operation: +16% allied speed, cooldown -8%."
+  },
+  {
+    id: "targeting-net",
+    name: "Targeting Net",
+    description: "Coordinate spotters and artillery vectors.",
+    buff: { allyRangeMult: 1.12, enemyHpMult: 0.92 },
+    note: "Operation: +12% allied range, enemy HP -8%."
+  }
+];
 
 const roleByUnitId = Object.fromEntries(UNIT_CONFIGS.map((unit) => [unit.id, unit.role]));
 

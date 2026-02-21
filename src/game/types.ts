@@ -64,6 +64,29 @@ export interface BattleModifiers {
   labels: string[];
 }
 
+export interface BattleBuffScalars {
+  allyDamageMult: number;
+  allyHpMult: number;
+  allySpeedMult: number;
+  allyRangeMult: number;
+  allyCooldownMult: number;
+  enemyDamageMult: number;
+  enemyHpMult: number;
+}
+
+export interface BattleBuff extends BattleBuffScalars {
+  notes: string[];
+}
+
+export interface PrepOperation {
+  id: string;
+  name: string;
+  description: string;
+  resourceGain?: Partial<Resources>;
+  buff?: Partial<BattleBuffScalars>;
+  note?: string;
+}
+
 export interface BattleCommand {
   seq: number;
   kind: CommandKind;

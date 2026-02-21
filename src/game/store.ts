@@ -1,10 +1,13 @@
 import { create } from "zustand";
 import {
   AGES,
+  BASE_BATTLE_BUFF,
   COMMAND_COOLDOWNS,
   FORMATIONS,
   INITIAL_RESOURCES,
   MANUAL_ACTIONS,
+  PREP_ACTIONS_PER_CYCLE,
+  PREP_OPERATIONS,
   RESOURCE_LABELS,
   RESOURCE_ORDER,
   RESOURCE_UNLOCK_AGE,
@@ -14,6 +17,7 @@ import {
   getUnitCapByAge
 } from "./config";
 import type { BattleCommand, BattleResult, CommandKind, FormationId, ResourceKey, Resources } from "./types";
+import type { BattleBuff } from "./types";
 
 const SAVE_KEY = "ageforge-v2-save";
 const SAVE_VERSION = 1;
@@ -22,6 +26,7 @@ const structureById = Object.fromEntries(STRUCTURES.map((item) => [item.id, item
 const unitById = Object.fromEntries(UNIT_CONFIGS.map((item) => [item.id, item]));
 const actionById = Object.fromEntries(MANUAL_ACTIONS.map((item) => [item.id, item]));
 const formationById = Object.fromEntries(FORMATIONS.map((item) => [item.id, item]));
+const operationById = Object.fromEntries(PREP_OPERATIONS.map((item) => [item.id, item]));
 
 export type Phase = "build" | "battle";
 
@@ -33,6 +38,9 @@ export interface GameState {
   structures: Record<string, number>;
   army: Record<string, number>;
   formation: FormationId;
+  prepActionsRemaining: number;
+  usedOperations: string[];
+  battleBuff: BattleBuff;
   phase: Phase;
   battleNonce: number;
   battleTimer: number;
@@ -49,6 +57,8 @@ export interface GameState {
   trainUnit: (unitId: string) => void;
   disbandUnit: (unitId: string) => void;
   setFormation: (formationId: FormationId) => void;
+  runPrepOperation: (operationId: string) => void;
+  passPrepAction: () => void;
   beginTargetingCommand: (kind: CommandKind) => void;
   cancelTargetingCommand: () => void;
   issueCommand: (kind: CommandKind, target?: { x: number; y: number }) => void;
@@ -121,42 +131,8 @@ function requirementsMet(lifetime: Resources, requirements: Partial<Resources>):
 }
 
 function calculateRates(state: Pick<GameState, "structures" | "resources" | "ageIndex" | "phase">): Resources {
-  const rates = createResourceMap(0);
-  const economyScale = state.phase === "battle" ? 0.45 : 1;
-
-  for (const structure of STRUCTURES) {
-    if (state.ageIndex < structure.unlockAge) {
-      continue;
-    }
-
-    const count = state.structures[structure.id] ?? 0;
-    if (count === 0) {
-      continue;
-    }
-
-    let utilization = 1;
-    if (structure.consumes) {
-      for (const resource of RESOURCE_ORDER) {
-        const consume = (structure.consumes[resource] ?? 0) * count;
-        if (consume <= 0) {
-          continue;
-        }
-        utilization = Math.min(utilization, (state.resources[resource] ?? 0) / consume);
-      }
-    }
-
-    utilization = Math.max(0, Math.min(1, utilization));
-    if (utilization === 0) {
-      continue;
-    }
-
-    for (const resource of RESOURCE_ORDER) {
-      rates[resource] -= (structure.consumes?.[resource] ?? 0) * count * utilization * economyScale;
-      rates[resource] += (structure.produces[resource] ?? 0) * count * utilization * economyScale;
-    }
-  }
-
-  return rates;
+  void state;
+  return createResourceMap(0);
 }
 
 function applyRates(resources: Resources, lifetime: Resources, rates: Resources, dt: number): [Resources, Resources] {
@@ -192,6 +168,9 @@ function serializeState(state: GameState): object {
     structures: state.structures,
     army: state.army,
     formation: state.formation,
+    prepActionsRemaining: state.prepActionsRemaining,
+    usedOperations: state.usedOperations,
+    battleBuff: state.battleBuff,
     logs: state.logs,
     lastReport: state.lastReport
   };
@@ -205,6 +184,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   structures: emptyCountsFromList(STRUCTURES),
   army: emptyCountsFromList(UNIT_CONFIGS),
   formation: "line",
+  prepActionsRemaining: PREP_ACTIONS_PER_CYCLE,
+  usedOperations: [],
+  battleBuff: { ...BASE_BATTLE_BUFF },
   phase: "build",
   battleNonce: 0,
   battleTimer: 0,
@@ -288,6 +270,57 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ formation: formationId, logs: addLog(state.logs, `${formationById[formationId].name} selected.`), dirty: true });
   },
 
+  runPrepOperation: (operationId) => {
+    const state = get();
+    const operation = operationById[operationId];
+    if (!operation || state.phase !== "build" || state.prepActionsRemaining <= 0) {
+      return;
+    }
+    if (state.usedOperations.includes(operationId)) {
+      return;
+    }
+
+    let nextResources = state.resources;
+    let nextLifetime = state.lifetime;
+    if (operation.resourceGain) {
+      [nextResources, nextLifetime] = addGain(nextResources, nextLifetime, operation.resourceGain);
+    }
+
+    const nextBuff: BattleBuff = {
+      ...state.battleBuff,
+      allyDamageMult: state.battleBuff.allyDamageMult * (operation.buff?.allyDamageMult ?? 1),
+      allyHpMult: state.battleBuff.allyHpMult * (operation.buff?.allyHpMult ?? 1),
+      allySpeedMult: state.battleBuff.allySpeedMult * (operation.buff?.allySpeedMult ?? 1),
+      allyRangeMult: state.battleBuff.allyRangeMult * (operation.buff?.allyRangeMult ?? 1),
+      allyCooldownMult: state.battleBuff.allyCooldownMult * (operation.buff?.allyCooldownMult ?? 1),
+      enemyDamageMult: state.battleBuff.enemyDamageMult * (operation.buff?.enemyDamageMult ?? 1),
+      enemyHpMult: state.battleBuff.enemyHpMult * (operation.buff?.enemyHpMult ?? 1),
+      notes: operation.note ? [...state.battleBuff.notes, operation.note] : state.battleBuff.notes
+    };
+
+    set({
+      resources: nextResources,
+      lifetime: nextLifetime,
+      battleBuff: nextBuff,
+      usedOperations: [...state.usedOperations, operationId],
+      prepActionsRemaining: Math.max(0, state.prepActionsRemaining - 1),
+      logs: addLog(state.logs, `${operation.name} executed.`),
+      dirty: true
+    });
+  },
+
+  passPrepAction: () => {
+    const state = get();
+    if (state.phase !== "build" || state.prepActionsRemaining <= 0) {
+      return;
+    }
+    set({
+      prepActionsRemaining: state.prepActionsRemaining - 1,
+      logs: addLog(state.logs, "Preparation point held."),
+      dirty: true
+    });
+  },
+
   beginTargetingCommand: (kind) => {
     const state = get();
     if (state.phase !== "battle") {
@@ -339,16 +372,19 @@ export const useGameStore = create<GameState>((set, get) => ({
   startBattle: () => {
     const state = get();
     const armyCount = Object.values(state.army).reduce((sum, value) => sum + value, 0);
-    if (state.phase === "battle" || armyCount <= 0) {
+    if (state.phase === "battle" || armyCount <= 0 || state.prepActionsRemaining > 0) {
       return;
     }
+    const prepSummary = state.battleBuff.notes.length
+      ? ` Prep: ${state.battleBuff.notes.join(" ")}`
+      : "";
     set({
       phase: "battle",
       battleTimer: 90,
       battleNonce: state.battleNonce + 1,
       commandQueue: [],
       pendingTargetCommand: null,
-      logs: addLog(state.logs, "Battle phase started."),
+      logs: addLog(state.logs, `Battle phase started.${prepSummary}`),
       dirty: true
     });
   },
@@ -387,6 +423,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       army: nextArmy,
       resources: nextResources,
       lifetime: nextLifetime,
+      prepActionsRemaining: PREP_ACTIONS_PER_CYCLE,
+      usedOperations: [],
+      battleBuff: { ...BASE_BATTLE_BUFF },
       commandQueue: [],
       pendingTargetCommand: null,
       lastReport: report,
@@ -398,7 +437,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   tick: (dt) => {
     const state = get();
     const rates = calculateRates(state);
-    let [resources, lifetime] = applyRates(state.resources, state.lifetime, rates, dt);
+    let resources = state.resources;
+    let lifetime = state.lifetime;
     let ageIndex = state.ageIndex;
     while (ageIndex < AGES.length - 1 && requirementsMet(lifetime, AGES[ageIndex + 1].requirements)) {
       ageIndex += 1;
@@ -442,6 +482,9 @@ export const useGameStore = create<GameState>((set, get) => ({
         structures?: Record<string, number>;
         army?: Record<string, number>;
         formation?: FormationId;
+        prepActionsRemaining?: number;
+        usedOperations?: string[];
+        battleBuff?: Partial<BattleBuff>;
         logs?: string[];
         lastReport?: string;
       };
@@ -458,6 +501,18 @@ export const useGameStore = create<GameState>((set, get) => ({
         structures: { ...emptyCountsFromList(STRUCTURES), ...(parsed.structures ?? {}) },
         army: { ...emptyCountsFromList(UNIT_CONFIGS), ...(parsed.army ?? {}) },
         formation: formationById[parsed.formation ?? "line"] ? (parsed.formation as FormationId) : "line",
+        prepActionsRemaining: Math.max(
+          0,
+          Math.min(PREP_ACTIONS_PER_CYCLE, parsed.prepActionsRemaining ?? PREP_ACTIONS_PER_CYCLE)
+        ),
+        usedOperations: Array.isArray(parsed.usedOperations)
+          ? parsed.usedOperations.filter((id) => Boolean(operationById[id]))
+          : [],
+        battleBuff: {
+          ...BASE_BATTLE_BUFF,
+          ...(parsed.battleBuff ?? {}),
+          notes: Array.isArray(parsed.battleBuff?.notes) ? parsed.battleBuff.notes : []
+        },
         logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 50) : ["Save loaded."],
         lastReport: parsed.lastReport ?? "No battles yet.",
         pendingTargetCommand: null,
@@ -485,6 +540,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       structures: emptyCountsFromList(STRUCTURES),
       army: emptyCountsFromList(UNIT_CONFIGS),
       formation: "line",
+      prepActionsRemaining: PREP_ACTIONS_PER_CYCLE,
+      usedOperations: [],
+      battleBuff: { ...BASE_BATTLE_BUFF },
       phase: "build",
       battleNonce: 0,
       battleTimer: 0,
