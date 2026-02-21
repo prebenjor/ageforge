@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#c6d4dc"/>
+      <stop offset="100%" stop-color="#708592"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="48" cy="84" rx="24" ry="7" fill="#17232d" opacity=".5"/>
+  <rect x="29" y="28" width="38" height="34" rx="8" fill="url(#plate)" stroke="#384b57" stroke-width="2"/>
+  <rect x="38" y="18" width="20" height="14" rx="4" fill="#8fa4b1" stroke="#3e5360" stroke-width="2"/>
+  <circle cx="48" cy="25" r="3" fill="#f1fdff"/>
+  <rect x="24" y="34" width="10" height="22" rx="3" fill="#7f96a3" stroke="#354754" stroke-width="2"/>
+  <rect x="62" y="34" width="10" height="22" rx="3" fill="#7f96a3" stroke="#354754" stroke-width="2"/>
+  <rect x="34" y="62" width="10" height="15" rx="3" fill="#7a909e" stroke="#334552" stroke-width="2"/>
+  <rect x="52" y="62" width="10" height="15" rx="3" fill="#7a909e" stroke="#334552" stroke-width="2"/>
+  <rect x="42" y="40" width="12" height="10" rx="2" fill="#e3f4f9"/>
+</svg>
