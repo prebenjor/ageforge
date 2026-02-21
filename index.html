@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ageforge: Incremental Civilizations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="game-shell">
+    <header class="hero panel">
+      <div>
+        <p class="eyebrow">Incremental Civilization</p>
+        <h1>Ageforge</h1>
+        <p class="subtitle">Guide your people from the Neolithic era to a futuristic society.</p>
+      </div>
+      <div class="age-chip-wrap">
+        <p class="small-label">Current Age</p>
+        <p id="age-name" class="age-chip">Neolithic Age</p>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-head">
+          <p class="small-label">Progress to Next Age</p>
+          <p id="progress-text">0%</p>
+        </div>
+        <div class="progress-bar">
+          <div id="progress-fill"></div>
+        </div>
+        <p id="goal-text" class="goal-text">Unlock the Bronze Age</p>
+      </div>
+    </header>
+
+    <section class="panel world-panel">
+      <div class="world-head">
+        <div>
+          <h2 id="world-title">Settlement Grounds</h2>
+          <p id="world-caption" class="subtitle">Click the glowing sites to direct your people.</p>
+        </div>
+        <p id="world-status" class="world-status">Hotspots grant boosted manual gains.</p>
+      </div>
+      <div id="world-scene" class="world-scene"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Resources</h2>
+      <div id="resource-grid" class="resource-grid"></div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
+        <h2>Actions</h2>
+        <div id="actions-list" class="button-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Upgrades</h2>
+        <div id="upgrades-list" class="card-list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Buildings</h2>
+      <div id="buildings-list" class="card-list"></div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
+        <h2>Timeline</h2>
+        <ol id="timeline-list" class="timeline"></ol>
+      </div>
+      <div class="panel">
+        <h2>Event Log</h2>
+        <ul id="event-log" class="event-log"></ul>
+      </div>
+    </section>
+
+    <footer class="panel footer-controls">
+      <button id="save-btn" class="control-btn">Save Now</button>
+      <button id="reset-btn" class="control-btn danger">Reset Run</button>
+      <p id="save-status" class="save-status">Autosave every 15s</p>
+    </footer>
+  </main>
+
+  <div id="victory-banner" class="victory-banner hidden">
+    <div class="victory-panel">
+      <h2>Futuristic Civilization Achieved</h2>
+      <p>Your society entered a post-scarcity age. Keep scaling or reset for another run.</p>
+      <button id="dismiss-victory" class="control-btn">Keep Playing</button>
+    </div>
+  </div>
+
+  <script defer src="game.js"></script>
+</body>
+</html>
