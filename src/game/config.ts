@@ -1,367 +1,298 @@
 import type {
-  BattleBuff,
-  BattleModifiers,
-  FormationConfig,
-  FormationId,
-  PrepOperation,
+  EnemyConfig,
   ResourceKey,
   Resources,
-  ShopOdds,
-  UnitConfig,
-  UnitRole
+  TowerConfig,
+  WaveDefinition,
+  WaveGroup
 } from "./types";
 
-export const RESOURCE_ORDER: ResourceKey[] = ["credits", "intel"];
+export const RESOURCE_ORDER: ResourceKey[] = ["gold", "essence"];
 
 export const RESOURCE_LABELS: Record<ResourceKey, string> = {
-  credits: "Credits",
-  intel: "Intel"
+  gold: "Gold",
+  essence: "Essence"
 };
 
 export const INITIAL_RESOURCES: Resources = {
-  credits: 10,
-  intel: 0
+  gold: 180,
+  essence: 0
 };
 
-export const MAX_LEVEL = 9;
-export const SHOP_SIZE = 5;
-export const XP_PURCHASE_COST = 4;
-export const XP_PURCHASE_GAIN = 4;
+export const INITIAL_LIVES = 25;
+export const INITIAL_INCOME = 14;
+export const WAVE_DURATION = 85;
+export const MAX_TOWER_LEVEL = 3;
 
-export const LEVEL_XP_REQUIREMENTS: Record<number, number> = {
-  1: 4,
-  2: 8,
-  3: 12,
-  4: 16,
-  5: 22,
-  6: 28,
-  7: 34,
-  8: 40
-};
+export const PAD_LAYOUT = [
+  { id: 0, x: 154, y: 116, label: "North 1" },
+  { id: 1, x: 246, y: 116, label: "North 2" },
+  { id: 2, x: 338, y: 116, label: "North 3" },
+  { id: 3, x: 496, y: 116, label: "North 4" },
+  { id: 4, x: 588, y: 116, label: "North 5" },
+  { id: 5, x: 154, y: 484, label: "South 1" },
+  { id: 6, x: 246, y: 484, label: "South 2" },
+  { id: 7, x: 338, y: 484, label: "South 3" },
+  { id: 8, x: 496, y: 484, label: "South 4" },
+  { id: 9, x: 588, y: 484, label: "South 5" },
+  { id: 10, x: 408, y: 248, label: "Mid 1" },
+  { id: 11, x: 408, y: 354, label: "Mid 2" }
+] as const;
 
-export const UNIT_CONFIGS: UnitConfig[] = [
+export const TOWER_CONFIGS: TowerConfig[] = [
   {
-    id: "militia",
-    name: "Shock Trooper",
-    tier: 1,
-    trait: "Vanguard",
-    role: "frontline",
-    cost: { credits: 1 },
-    hp: 120,
-    damage: 12,
-    range: 28,
-    speed: 76,
-    cooldown: 0.92,
-    radius: 10
+    id: "guard",
+    name: "Guard Tower",
+    role: "single",
+    description: "Fast single-target bolts. Bread-and-butter anti-rush.",
+    cost: { gold: 60 },
+    baseDamage: 18,
+    baseRange: 138,
+    baseCooldown: 0.72,
+    projectileSpeed: 560,
+    color: 0x7cc8ff,
+    projectileColor: 0xb8edff
   },
   {
-    id: "slinger",
-    name: "Pulse Ranger",
-    tier: 1,
-    trait: "Marksman",
-    role: "ranged",
-    cost: { credits: 1 },
-    hp: 82,
-    damage: 10,
-    range: 132,
-    speed: 74,
-    cooldown: 0.78,
-    radius: 8
+    id: "arcane",
+    name: "Arcane Spire",
+    role: "single",
+    description: "Heavy burst shots for armored enemies and elites.",
+    cost: { gold: 90, essence: 1 },
+    baseDamage: 44,
+    baseRange: 162,
+    baseCooldown: 1.18,
+    projectileSpeed: 620,
+    color: 0xc39bff,
+    projectileColor: 0xe0cdff
   },
   {
-    id: "knight",
-    name: "Aegis Lancer",
-    tier: 2,
-    trait: "Sentinel",
-    role: "frontline",
-    cost: { credits: 2 },
-    hp: 188,
-    damage: 20,
-    range: 32,
-    speed: 84,
-    cooldown: 1.02,
-    radius: 11
+    id: "bombard",
+    name: "Bombard Keep",
+    role: "aoe",
+    description: "Slow shells with splash. Best for thick mid-wave packs.",
+    cost: { gold: 120, essence: 2 },
+    baseDamage: 66,
+    baseRange: 186,
+    baseCooldown: 1.65,
+    projectileSpeed: 420,
+    color: 0xffa25a,
+    projectileColor: 0xffd3ad,
+    splashRadius: 52
   },
   {
-    id: "artillery",
-    name: "Rail Artillery",
-    tier: 3,
-    trait: "Ordnance",
-    role: "siege",
-    cost: { credits: 3, intel: 1 },
-    hp: 128,
-    damage: 42,
-    range: 200,
-    speed: 54,
-    cooldown: 1.38,
-    radius: 12
-  },
-  {
-    id: "drone",
-    name: "Drone Swarm",
-    tier: 3,
-    trait: "Swarm",
-    role: "ranged",
-    cost: { credits: 3, intel: 1 },
-    hp: 100,
-    damage: 24,
-    range: 166,
-    speed: 96,
-    cooldown: 0.64,
-    radius: 9
-  },
-  {
-    id: "mech",
-    name: "Titan Exo",
-    tier: 4,
-    trait: "Titan",
-    role: "frontline",
-    cost: { credits: 4, intel: 2 },
-    hp: 280,
-    damage: 36,
-    range: 48,
-    speed: 76,
-    cooldown: 0.9,
-    radius: 13
+    id: "frost",
+    name: "Frost Reliquary",
+    role: "control",
+    description: "Applies movement slow while maintaining steady DPS.",
+    cost: { gold: 95, essence: 1 },
+    baseDamage: 16,
+    baseRange: 150,
+    baseCooldown: 0.82,
+    projectileSpeed: 530,
+    color: 0x7cf3e8,
+    projectileColor: 0xc2fff8,
+    slowFactor: 0.68,
+    slowDuration: 1.2
   }
 ];
 
-export const UNIT_POOL_BY_TIER: Record<1 | 2 | 3 | 4, string[]> = {
-  1: UNIT_CONFIGS.filter((unit) => unit.tier === 1).map((unit) => unit.id),
-  2: UNIT_CONFIGS.filter((unit) => unit.tier === 2).map((unit) => unit.id),
-  3: UNIT_CONFIGS.filter((unit) => unit.tier === 3).map((unit) => unit.id),
-  4: UNIT_CONFIGS.filter((unit) => unit.tier === 4).map((unit) => unit.id)
-};
-
-export const SHOP_ODDS_BY_LEVEL: Record<number, ShopOdds> = {
-  1: { tier1: 1, tier2: 0, tier3: 0, tier4: 0 },
-  2: { tier1: 0.75, tier2: 0.25, tier3: 0, tier4: 0 },
-  3: { tier1: 0.55, tier2: 0.35, tier3: 0.1, tier4: 0 },
-  4: { tier1: 0.42, tier2: 0.4, tier3: 0.18, tier4: 0 },
-  5: { tier1: 0.3, tier2: 0.42, tier3: 0.25, tier4: 0.03 },
-  6: { tier1: 0.2, tier2: 0.4, tier3: 0.34, tier4: 0.06 },
-  7: { tier1: 0.12, tier2: 0.35, tier3: 0.4, tier4: 0.13 },
-  8: { tier1: 0.06, tier2: 0.24, tier3: 0.45, tier4: 0.25 },
-  9: { tier1: 0.02, tier2: 0.18, tier3: 0.44, tier4: 0.36 }
-};
-
-export const FORMATIONS: FormationConfig[] = [
+export const ENEMY_CONFIGS: EnemyConfig[] = [
   {
-    id: "line",
-    name: "Adaptive Grid",
-    description: "Stable baseline with no penalties."
+    id: "raider",
+    name: "Raider",
+    hp: 62,
+    speed: 70,
+    rewardGold: 2,
+    rewardEssence: 0,
+    radius: 9,
+    color: 0xd8817f
   },
   {
-    id: "vanguard",
-    name: "Vanguard Spear",
-    description: "Frontline surge with stronger breach pressure."
+    id: "wolf",
+    name: "Dire Wolf",
+    hp: 40,
+    speed: 108,
+    rewardGold: 1,
+    rewardEssence: 0,
+    radius: 7,
+    color: 0xcfb27e
   },
   {
-    id: "skirmish",
-    name: "Skirmish Arc",
-    description: "Ranged units kite harder with faster cadence."
+    id: "ogre",
+    name: "Ogre",
+    hp: 220,
+    speed: 46,
+    rewardGold: 5,
+    rewardEssence: 1,
+    radius: 12,
+    color: 0xaf8f7d
   },
   {
-    id: "siege",
-    name: "Siege Matrix",
-    description: "Long-range siege pressure, slower global movement."
+    id: "warlock",
+    name: "Warlock",
+    hp: 142,
+    speed: 62,
+    rewardGold: 4,
+    rewardEssence: 1,
+    radius: 10,
+    color: 0xb48be4
+  },
+  {
+    id: "infernal",
+    name: "Infernal",
+    hp: 490,
+    speed: 38,
+    rewardGold: 10,
+    rewardEssence: 2,
+    radius: 15,
+    color: 0xff7668
   }
 ];
 
-export const COMMAND_COOLDOWNS = {
-  rally: 8,
-  retreat: 12,
-  overdrive: 20
-} as const;
-
-export const PREP_OPERATIONS: PrepOperation[] = [
-  {
-    id: "target-sync",
-    name: "Target Sync",
-    description: "Upload a precision target model before combat.",
-    buff: { allyDamageMult: 1.1 },
-    note: "Directive: +10% allied damage this round."
-  },
-  {
-    id: "shield-grid",
-    name: "Shield Grid",
-    description: "Deploy temporary barrier projectors.",
-    buff: { allyHpMult: 1.14 },
-    note: "Directive: +14% allied HP this round."
-  },
-  {
-    id: "throttle",
-    name: "Throttle Burst",
-    description: "Prime locomotion systems for rapid reposition.",
-    buff: { allySpeedMult: 1.16, allyCooldownMult: 0.94 },
-    note: "Directive: +16% speed, -6% cooldown this round."
-  },
-  {
-    id: "jammer",
-    name: "Signal Jammer",
-    description: "Disrupt hostile telemetry and coordination.",
-    buff: { enemyDamageMult: 0.9, enemyHpMult: 0.95 },
-    note: "Directive: enemy damage -10%, enemy HP -5%."
-  }
-];
-
-export const BASE_BATTLE_BUFF: BattleBuff = {
-  allyDamageMult: 1,
-  allyHpMult: 1,
-  allySpeedMult: 1,
-  allyRangeMult: 1,
-  allyCooldownMult: 1,
-  enemyDamageMult: 1,
-  enemyHpMult: 1,
-  notes: []
-};
-
-const roleByUnitId = Object.fromEntries(UNIT_CONFIGS.map((unit) => [unit.id, unit.role]));
-
-function createRoleMap(fill = 1): Record<UnitRole, number> {
-  return {
-    frontline: fill,
-    ranged: fill,
-    support: fill,
-    siege: fill
-  };
-}
-
-function multiplyRoleValue(target: Partial<Record<UnitRole, number>>, role: UnitRole, value: number): void {
-  target[role] = (target[role] ?? 1) * value;
-}
-
-function roleCountFromArmy(army: Record<string, number>): Record<UnitRole, number> {
-  const counts = { frontline: 0, ranged: 0, support: 0, siege: 0 };
-  for (const [unitId, count] of Object.entries(army)) {
-    const role = roleByUnitId[unitId];
-    if (!role) {
-      continue;
-    }
-    counts[role] += count;
-  }
-  return counts;
-}
-
-export function computeBattleModifiers(army: Record<string, number>, formationId: FormationId): BattleModifiers {
-  const mods: BattleModifiers = {
-    hpMult: 1,
-    damageMult: 1,
-    speedMult: 1,
-    rangeMult: 1,
-    cooldownMult: 1,
-    hpByRole: createRoleMap(),
-    damageByRole: createRoleMap(),
-    speedByRole: createRoleMap(),
-    rangeByRole: createRoleMap(),
-    cooldownByRole: createRoleMap(),
-    labels: []
-  };
-
-  const roleCounts = roleCountFromArmy(army);
-  const droneCount = army.drone ?? 0;
-  const mechCount = army.mech ?? 0;
-
-  if (formationId === "line") {
-    mods.hpMult *= 1.04;
-    mods.labels.push("Adaptive Grid: +4% global HP");
-  } else if (formationId === "vanguard") {
-    multiplyRoleValue(mods.hpByRole, "frontline", 1.22);
-    multiplyRoleValue(mods.speedByRole, "frontline", 1.08);
-    mods.damageMult *= 1.04;
-    mods.labels.push("Vanguard Spear: frontline breach bonus");
-  } else if (formationId === "skirmish") {
-    multiplyRoleValue(mods.cooldownByRole, "ranged", 0.84);
-    multiplyRoleValue(mods.speedByRole, "ranged", 1.12);
-    multiplyRoleValue(mods.hpByRole, "frontline", 0.94);
-    mods.labels.push("Skirmish Arc: ranged cadence bonus");
-  } else if (formationId === "siege") {
-    multiplyRoleValue(mods.damageByRole, "siege", 1.22);
-    multiplyRoleValue(mods.rangeByRole, "siege", 1.2);
-    mods.speedMult *= 0.93;
-    mods.labels.push("Siege Matrix: siege firepower bonus");
-  }
-
-  if (roleCounts.frontline >= 5) {
-    multiplyRoleValue(mods.hpByRole, "frontline", 1.16);
-    mods.labels.push("Trait Sentinel Core: frontline +16% HP");
-  }
-  if (roleCounts.frontline >= 3 && roleCounts.ranged >= 4) {
-    multiplyRoleValue(mods.damageByRole, "ranged", 1.18);
-    mods.labels.push("Trait Crosslink: ranged +18% damage");
-  }
-  if (roleCounts.siege >= 2) {
-    multiplyRoleValue(mods.damageByRole, "siege", 1.15);
-    multiplyRoleValue(mods.rangeByRole, "siege", 1.1);
-    mods.labels.push("Trait Battery: siege +15% damage");
-  }
-  if (droneCount >= 3) {
-    mods.cooldownMult *= 0.9;
-    mods.labels.push("Trait Swarm Mesh: global cooldown -10%");
-  }
-  if (mechCount >= 2 && droneCount >= 2) {
-    mods.damageMult *= 1.08;
-    mods.hpMult *= 1.08;
-    mods.labels.push("Trait Titan Net: +8% global HP/damage");
-  }
-
-  return mods;
-}
+const towerById = Object.fromEntries(TOWER_CONFIGS.map((tower) => [tower.id, tower]));
+const enemyById = Object.fromEntries(ENEMY_CONFIGS.map((enemy) => [enemy.id, enemy]));
 
 export function createResourceMap(fill = 0): Resources {
   return {
-    credits: fill,
-    intel: fill
+    gold: fill,
+    essence: fill
   };
 }
 
-export function getUnitCapByLevel(level: number): number {
-  return Math.min(11, 2 + level);
+export function getTowerById(towerId: string): TowerConfig | null {
+  return towerById[towerId] ?? null;
 }
 
-export function getXpRequiredForLevel(level: number): number {
-  return LEVEL_XP_REQUIREMENTS[level] ?? 0;
+export function getEnemyById(enemyId: string): EnemyConfig | null {
+  return enemyById[enemyId] ?? null;
 }
 
-export function getStageThreatLabel(stage: number): string {
-  if (stage < 4) {
-    return "Low Threat";
+export function getTowerStats(towerId: string, level: number): {
+  damage: number;
+  range: number;
+  cooldown: number;
+  splashRadius: number;
+  slowFactor: number;
+  slowDuration: number;
+} {
+  const tower = getTowerById(towerId);
+  if (!tower) {
+    return { damage: 0, range: 0, cooldown: 1, splashRadius: 0, slowFactor: 1, slowDuration: 0 };
   }
-  if (stage < 8) {
-    return "Elevated Threat";
-  }
-  if (stage < 13) {
-    return "High Threat";
-  }
-  return "Critical Threat";
+  const normalizedLevel = Math.max(1, Math.min(MAX_TOWER_LEVEL, level));
+  const levelScale = 1 + (normalizedLevel - 1) * 0.62;
+  const cooldownScale = 1 + (normalizedLevel - 1) * 0.14;
+  return {
+    damage: Math.round(tower.baseDamage * levelScale),
+    range: Math.round(tower.baseRange * (1 + (normalizedLevel - 1) * 0.06)),
+    cooldown: Math.max(0.18, Number((tower.baseCooldown / cooldownScale).toFixed(2))),
+    splashRadius: tower.splashRadius ? Math.round(tower.splashRadius + (normalizedLevel - 1) * 10) : 0,
+    slowFactor: tower.slowFactor ? Math.max(0.42, tower.slowFactor - (normalizedLevel - 1) * 0.04) : 1,
+    slowDuration: tower.slowDuration ? Number((tower.slowDuration + (normalizedLevel - 1) * 0.16).toFixed(2)) : 0
+  };
 }
 
-export function getEnemyWave(stage: number): Array<{ unitId: string; count: number }> {
-  if (stage <= 2) {
-    return [
-      { unitId: "militia", count: 5 + stage },
-      { unitId: "slinger", count: 3 + Math.floor(stage / 2) }
-    ];
+export function getTowerUpgradeCost(towerId: string, currentLevel: number): Partial<Resources> | null {
+  const tower = getTowerById(towerId);
+  if (!tower || currentLevel >= MAX_TOWER_LEVEL) {
+    return null;
   }
-  if (stage <= 5) {
-    return [
-      { unitId: "militia", count: 6 + Math.floor(stage / 2) },
-      { unitId: "slinger", count: 5 + Math.floor(stage / 2) },
-      { unitId: "knight", count: 2 + Math.floor((stage - 2) / 2) }
-    ];
+  const scale = 0.74 + currentLevel * 0.68;
+  const baseGold = tower.cost.gold ?? 0;
+  const baseEssence = tower.cost.essence ?? 0;
+  return {
+    gold: Math.max(1, Math.ceil(baseGold * scale)),
+    essence: baseEssence > 0 ? Math.max(1, Math.ceil(baseEssence * (0.48 + currentLevel * 0.52))) : 0
+  };
+}
+
+export function getTowerSellRefund(towerId: string, level: number): Partial<Resources> {
+  const tower = getTowerById(towerId);
+  if (!tower) {
+    return { gold: 0, essence: 0 };
   }
-  if (stage <= 9) {
-    return [
-      { unitId: "knight", count: 5 + Math.floor((stage - 4) / 2) },
-      { unitId: "artillery", count: 2 + Math.floor((stage - 5) / 2) },
-      { unitId: "drone", count: 3 + Math.floor((stage - 5) / 2) }
-    ];
+  let totalGold = tower.cost.gold ?? 0;
+  let totalEssence = tower.cost.essence ?? 0;
+  for (let current = 1; current < level; current += 1) {
+    const upgradeCost = getTowerUpgradeCost(towerId, current);
+    if (!upgradeCost) {
+      continue;
+    }
+    totalGold += upgradeCost.gold ?? 0;
+    totalEssence += upgradeCost.essence ?? 0;
   }
-  return [
-    { unitId: "knight", count: 8 + Math.floor((stage - 9) / 2) },
-    { unitId: "artillery", count: 5 + Math.floor((stage - 9) / 2) },
-    { unitId: "drone", count: 6 + Math.floor((stage - 9) / 2) },
-    { unitId: "mech", count: 2 + Math.floor((stage - 10) / 3) }
-  ];
+  return {
+    gold: Math.floor(totalGold * 0.72),
+    essence: Math.floor(totalEssence * 0.72)
+  };
+}
+
+function scaleGroups(groups: WaveGroup[], hpScale: number): WaveGroup[] {
+  return groups.map((group) => ({ ...group, count: Math.max(1, Math.floor(group.count * hpScale)) }));
+}
+
+export function getWaveDefinition(wave: number): WaveDefinition {
+  const stage = Math.max(1, wave);
+  const densityScale = 1 + (stage - 1) * 0.08;
+  if (stage % 5 === 0) {
+    return {
+      label: "Boss Siege",
+      groups: scaleGroups(
+        [
+          { enemyId: "raider", count: 10 + stage, interval: 0.48, startAt: 0 },
+          { enemyId: "warlock", count: 4 + Math.floor(stage / 2), interval: 0.84, startAt: 3.8 },
+          { enemyId: "infernal", count: 1 + Math.floor(stage / 10), interval: 2.8, startAt: 8.6 }
+        ],
+        densityScale
+      )
+    };
+  }
+  if (stage % 3 === 0) {
+    return {
+      label: "Fast Pressure",
+      groups: scaleGroups(
+        [
+          { enemyId: "wolf", count: 16 + stage * 2, interval: 0.29, startAt: 0.2 },
+          { enemyId: "raider", count: 10 + stage, interval: 0.44, startAt: 3.2 }
+        ],
+        densityScale
+      )
+    };
+  }
+  if (stage >= 7) {
+    return {
+      label: "War Host",
+      groups: scaleGroups(
+        [
+          { enemyId: "raider", count: 14 + stage, interval: 0.42, startAt: 0.1 },
+          { enemyId: "ogre", count: 5 + Math.floor(stage / 2), interval: 1.06, startAt: 4.4 },
+          { enemyId: "warlock", count: 7 + Math.floor(stage / 2), interval: 0.85, startAt: 6.8 }
+        ],
+        densityScale
+      )
+    };
+  }
+  return {
+    label: "Scout Push",
+    groups: scaleGroups(
+      [
+        { enemyId: "raider", count: 11 + stage * 2, interval: 0.44, startAt: 0 },
+        { enemyId: "wolf", count: 6 + stage, interval: 0.36, startAt: 4.8 }
+      ],
+      densityScale
+    )
+  };
+}
+
+export function getWaveSummary(wave: number): string {
+  const definition = getWaveDefinition(wave);
+  const summary = definition.groups
+    .map((group) => {
+      const enemy = getEnemyById(group.enemyId);
+      return `${enemy?.name ?? group.enemyId} x${group.count}`;
+    })
+    .join(" | ");
+  return `${definition.label}: ${summary}`;
 }
 

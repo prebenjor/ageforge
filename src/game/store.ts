@@ -1,83 +1,33 @@
 import { create } from "zustand";
 import {
-  BASE_BATTLE_BUFF,
-  COMMAND_COOLDOWNS,
-  FORMATIONS,
+  INITIAL_INCOME,
+  INITIAL_LIVES,
   INITIAL_RESOURCES,
-  MAX_LEVEL,
-  PREP_OPERATIONS,
+  MAX_TOWER_LEVEL,
+  PAD_LAYOUT,
   RESOURCE_LABELS,
   RESOURCE_ORDER,
-  SHOP_ODDS_BY_LEVEL,
-  SHOP_SIZE,
-  UNIT_CONFIGS,
-  UNIT_POOL_BY_TIER,
-  XP_PURCHASE_COST,
-  XP_PURCHASE_GAIN,
+  WAVE_DURATION,
   createResourceMap,
-  getUnitCapByLevel,
-  getXpRequiredForLevel
+  getTowerById,
+  getTowerSellRefund,
+  getTowerUpgradeCost
 } from "./config";
-import type { BattleBuff, BattleCommand, BattleResult, CommandKind, FormationId, ResourceKey, Resources } from "./types";
+import type {
+  BattleTelemetry,
+  Phase,
+  ResourceKey,
+  Resources,
+  TowerPlacement,
+  WaveResult
+} from "./types";
 
-const SAVE_KEY = "ageforge-v3-save";
-const SAVE_VERSION = 3;
-
-const unitById = Object.fromEntries(UNIT_CONFIGS.map((item) => [item.id, item]));
-const formationById = Object.fromEntries(FORMATIONS.map((item) => [item.id, item]));
-const operationById = Object.fromEntries(PREP_OPERATIONS.map((item) => [item.id, item]));
-
-export type Phase = "build" | "battle";
-
-export interface GameState {
-  resources: Resources;
-  lifetime: Resources;
-  rates: Resources;
-  stage: number;
-  level: number;
-  xp: number;
-  commanderHp: number;
-  winStreak: number;
-  loseStreak: number;
-  army: Record<string, number>;
-  shop: Array<string | null>;
-  shopLocked: boolean;
-  formation: FormationId;
-  directiveUsed: boolean;
-  battleBuff: BattleBuff;
-  phase: Phase;
-  battleNonce: number;
-  battleTimer: number;
-  worldTime: number;
-  commandQueue: BattleCommand[];
-  commandCooldownReadyAt: Record<CommandKind, number>;
-  pendingTargetCommand: CommandKind | null;
-  logs: string[];
-  lastReport: string;
-  dirty: boolean;
-  loaded: boolean;
-  refreshShop: (isFree?: boolean) => void;
-  toggleShopLock: () => void;
-  buyShopUnit: (slotIndex: number) => void;
-  buyXp: () => void;
-  trainUnit: (unitId: string) => void;
-  disbandUnit: (unitId: string) => void;
-  setFormation: (formationId: FormationId) => void;
-  runPrepOperation: (operationId: string) => void;
-  beginTargetingCommand: (kind: CommandKind) => void;
-  cancelTargetingCommand: () => void;
-  issueCommand: (kind: CommandKind, target?: { x: number; y: number }) => void;
-  startBattle: () => void;
-  resolveBattle: (result: BattleResult) => void;
-  tick: (dt: number) => void;
-  load: () => void;
-  saveNow: () => void;
-  reset: () => void;
-}
+const SAVE_KEY = "ageforge-td-v1-save";
+const SAVE_VERSION = 1;
 
 function addLog(logs: string[], message: string): string[] {
   const next = [`${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${message}`, ...logs];
-  return next.slice(0, 60);
+  return next.slice(0, 70);
 }
 
 function canAfford(resources: Resources, cost?: Partial<Resources>): boolean {
@@ -107,7 +57,7 @@ function addGain(resources: Resources, lifetime: Resources, gain: Partial<Resour
   const nextLifetime = { ...lifetime };
   for (const resource of RESOURCE_ORDER) {
     const amount = gain[resource] ?? 0;
-    if (!amount) {
+    if (amount === 0) {
       continue;
     }
     nextResources[resource] += amount;
@@ -118,69 +68,57 @@ function addGain(resources: Resources, lifetime: Resources, gain: Partial<Resour
   return [nextResources, nextLifetime];
 }
 
-function emptyCountsFromList(list: Array<{ id: string }>): Record<string, number> {
-  const record: Record<string, number> = {};
-  for (const item of list) {
-    record[item.id] = 0;
+function createEmptyBoard(): Record<number, TowerPlacement | null> {
+  const board: Record<number, TowerPlacement | null> = {};
+  for (const pad of PAD_LAYOUT) {
+    board[pad.id] = null;
   }
-  return record;
+  return board;
 }
 
-function getTotalArmyCount(army: Record<string, number>): number {
-  return Object.values(army).reduce((sum, value) => sum + value, 0);
+function countPlacedTowers(board: Record<number, TowerPlacement | null>): number {
+  return Object.values(board).reduce((sum, slot) => sum + (slot ? 1 : 0), 0);
 }
 
-function getXpProgress(level: number, xp: number): { level: number; xp: number; leveled: number } {
-  let nextLevel = level;
-  let nextXp = xp;
-  let leveled = 0;
-
-  while (nextLevel < MAX_LEVEL) {
-    const needed = getXpRequiredForLevel(nextLevel);
-    if (needed <= 0 || nextXp < needed) {
-      break;
-    }
-    nextXp -= needed;
-    nextLevel += 1;
-    leveled += 1;
-  }
-
-  if (nextLevel >= MAX_LEVEL) {
-    nextXp = 0;
-  }
-
-  return { level: nextLevel, xp: nextXp, leveled };
+function defaultBattleTelemetry(): BattleTelemetry {
+  return {
+    kills: 0,
+    leaks: 0,
+    remaining: 0,
+    incoming: 0,
+    goldEarned: 0,
+    essenceEarned: 0
+  };
 }
 
-function pickTierFromOdds(level: number): 1 | 2 | 3 | 4 {
-  const odds = SHOP_ODDS_BY_LEVEL[Math.max(1, Math.min(MAX_LEVEL, level))];
-  const roll = Math.random();
-  const tier2Cutoff = odds.tier1 + odds.tier2;
-  const tier3Cutoff = tier2Cutoff + odds.tier3;
-  if (roll < odds.tier1) {
-    return 1;
-  }
-  if (roll < tier2Cutoff) {
-    return 2;
-  }
-  if (roll < tier3Cutoff) {
-    return 3;
-  }
-  return 4;
-}
-
-function rollShop(level: number): Array<string | null> {
-  const slots: Array<string | null> = [];
-  for (let i = 0; i < SHOP_SIZE; i += 1) {
-    const tier = pickTierFromOdds(level);
-    const pool = UNIT_POOL_BY_TIER[tier];
-    if (!pool.length) {
-      slots.push(null);
-      continue;
-    }
-    slots.push(pool[Math.floor(Math.random() * pool.length)]);
-  }
-  return slots;
+export interface GameState {
+  resources: Resources;
+  lifetime: Resources;
+  phase: Phase;
+  wave: number;
+  lives: number;
+  income: number;
+  board: Record<number, TowerPlacement | null>;
+  selectedTowerId: string | null;
+  battleNonce: number;
+  battleTimer: number;
+  worldTime: number;
+  battleTelemetry: BattleTelemetry;
+  logs: string[];
+  lastReport: string;
+  dirty: boolean;
+  loaded: boolean;
+  selectTower: (towerId: string | null) => void;
+  placeTower: (padId: number) => void;
+  upgradeTower: (padId: number) => void;
+  sellTower: (padId: number) => void;
+  startWave: () => void;
+  setBattleTelemetry: (telemetry: BattleTelemetry) => void;
+  resolveWave: (result: WaveResult) => void;
+  tick: (dt: number) => void;
+  load: () => void;
+  saveNow: () => void;
+  reset: () => void;
 }
 
 function serializeState(state: GameState): object {
@@ -188,354 +126,211 @@ function serializeState(state: GameState): object {
     version: SAVE_VERSION,
     resources: state.resources,
     lifetime: state.lifetime,
-    stage: state.stage,
-    level: state.level,
-    xp: state.xp,
-    commanderHp: state.commanderHp,
-    winStreak: state.winStreak,
-    loseStreak: state.loseStreak,
-    army: state.army,
-    shop: state.shop,
-    shopLocked: state.shopLocked,
-    formation: state.formation,
-    directiveUsed: state.directiveUsed,
-    battleBuff: state.battleBuff,
+    phase: state.phase,
+    wave: state.wave,
+    lives: state.lives,
+    income: state.income,
+    board: state.board,
+    selectedTowerId: state.selectedTowerId,
     logs: state.logs,
     lastReport: state.lastReport
   };
 }
 
-const initialShop = rollShop(1);
-
 export const useGameStore = create<GameState>((set, get) => ({
   resources: { ...INITIAL_RESOURCES },
   lifetime: createResourceMap(0),
-  rates: createResourceMap(0),
-  stage: 1,
-  level: 1,
-  xp: 0,
-  commanderHp: 100,
-  winStreak: 0,
-  loseStreak: 0,
-  army: emptyCountsFromList(UNIT_CONFIGS),
-  shop: [...initialShop],
-  shopLocked: false,
-  formation: "line",
-  directiveUsed: false,
-  battleBuff: { ...BASE_BATTLE_BUFF },
   phase: "build",
+  wave: 1,
+  lives: INITIAL_LIVES,
+  income: INITIAL_INCOME,
+  board: createEmptyBoard(),
+  selectedTowerId: "guard",
   battleNonce: 0,
   battleTimer: 0,
   worldTime: 0,
-  commandQueue: [],
-  commandCooldownReadyAt: { rally: 0, retreat: 0, overdrive: 0 },
-  pendingTargetCommand: null,
-  logs: ["Command uplink active."],
-  lastReport: "No rounds completed.",
+  battleTelemetry: defaultBattleTelemetry(),
+  logs: ["Bastion command initialized."],
+  lastReport: "No waves completed.",
   dirty: true,
   loaded: false,
 
-  refreshShop: (isFree = false) => {
+  selectTower: (towerId) => {
     const state = get();
-    if (state.phase !== "build") {
-      return;
-    }
-    const refreshCost = isFree ? 0 : 2;
-    if (!isFree && state.resources.credits < refreshCost) {
-      return;
-    }
-    const nextResources = isFree ? state.resources : applyCost(state.resources, { credits: refreshCost });
-    set({
-      resources: nextResources,
-      shop: rollShop(state.level),
-      logs: addLog(state.logs, isFree ? "Shop synchronized." : `Shop refreshed (-${refreshCost} credits).`),
-      dirty: true
-    });
-  },
-
-  toggleShopLock: () => {
-    const state = get();
-    if (state.phase !== "build") {
+    if (towerId && !getTowerById(towerId)) {
       return;
     }
     set({
-      shopLocked: !state.shopLocked,
-      logs: addLog(state.logs, state.shopLocked ? "Shop unlocked." : "Shop locked for next round."),
-      dirty: true
+      selectedTowerId: towerId,
+      logs: towerId ? addLog(state.logs, `${getTowerById(towerId)?.name ?? towerId} selected.`) : state.logs
     });
   },
 
-  buyShopUnit: (slotIndex) => {
+  placeTower: (padId) => {
     const state = get();
-    if (state.phase !== "build") {
+    if (state.phase !== "build" || state.lives <= 0) {
       return;
     }
-    const unitId = state.shop[slotIndex];
-    if (!unitId) {
+    if (!state.selectedTowerId) {
       return;
     }
-    const config = unitById[unitId];
-    if (!config || !canAfford(state.resources, config.cost)) {
+    const selected = getTowerById(state.selectedTowerId);
+    if (!selected) {
       return;
     }
-    const unitCap = getUnitCapByLevel(state.level);
-    if (getTotalArmyCount(state.army) >= unitCap) {
-      return;
-    }
-    const nextShop = [...state.shop];
-    nextShop[slotIndex] = null;
-    set({
-      resources: applyCost(state.resources, config.cost),
-      army: { ...state.army, [unitId]: (state.army[unitId] ?? 0) + 1 },
-      shop: nextShop,
-      logs: addLog(state.logs, `${config.name} deployed from shop.`),
-      dirty: true
-    });
-  },
-
-  buyXp: () => {
-    const state = get();
-    if (state.phase !== "build" || state.level >= MAX_LEVEL) {
-      return;
-    }
-    if (state.resources.credits < XP_PURCHASE_COST) {
-      return;
-    }
-    const progressed = getXpProgress(state.level, state.xp + XP_PURCHASE_GAIN);
-    const nextLogs =
-      progressed.leveled > 0
-        ? addLog(state.logs, `Command level upgraded to ${progressed.level}.`)
-        : addLog(state.logs, `XP purchased (+${XP_PURCHASE_GAIN}).`);
-    set({
-      resources: applyCost(state.resources, { credits: XP_PURCHASE_COST }),
-      level: progressed.level,
-      xp: progressed.xp,
-      logs: nextLogs,
-      dirty: true
-    });
-  },
-
-  trainUnit: (unitId) => {
-    const state = get();
-    const config = unitById[unitId];
-    if (!config || state.phase !== "build") {
-      return;
-    }
-    const unitCap = getUnitCapByLevel(state.level);
-    if (getTotalArmyCount(state.army) >= unitCap || !canAfford(state.resources, config.cost)) {
-      return;
-    }
-    set({
-      resources: applyCost(state.resources, config.cost),
-      army: { ...state.army, [unitId]: (state.army[unitId] ?? 0) + 1 },
-      logs: addLog(state.logs, `${config.name} recruited.`),
-      dirty: true
-    });
-  },
-
-  disbandUnit: (unitId) => {
-    const state = get();
-    if (state.phase === "battle") {
-      return;
-    }
-    const current = state.army[unitId] ?? 0;
-    const config = unitById[unitId];
-    if (current <= 0 || !config) {
+    const current = state.board[padId];
+    if (current && current.towerId !== selected.id) {
       return;
     }
 
-    const refund: Partial<Resources> = {};
-    for (const resource of RESOURCE_ORDER) {
-      const value = config.cost[resource];
-      if (!value) {
-        continue;
+    if (!current) {
+      if (!canAfford(state.resources, selected.cost)) {
+        return;
       }
-      refund[resource] = Math.max(1, Math.floor(value * 0.5));
+      const nextBoard = { ...state.board, [padId]: { padId, towerId: selected.id, level: 1 } };
+      set({
+        resources: applyCost(state.resources, selected.cost),
+        board: nextBoard,
+        logs: addLog(state.logs, `${selected.name} built on pad ${padId + 1}.`),
+        dirty: true
+      });
+      return;
     }
+
+    if (current.level >= MAX_TOWER_LEVEL) {
+      return;
+    }
+    const upgradeCost = getTowerUpgradeCost(current.towerId, current.level);
+    if (!upgradeCost || !canAfford(state.resources, upgradeCost)) {
+      return;
+    }
+    const upgraded: TowerPlacement = { ...current, level: current.level + 1 };
+    set({
+      resources: applyCost(state.resources, upgradeCost),
+      board: { ...state.board, [padId]: upgraded },
+      logs: addLog(state.logs, `${selected.name} upgraded to tier ${upgraded.level} on pad ${padId + 1}.`),
+      dirty: true
+    });
+  },
+
+  upgradeTower: (padId) => {
+    const state = get();
+    if (state.phase !== "build") {
+      return;
+    }
+    const current = state.board[padId];
+    if (!current || current.level >= MAX_TOWER_LEVEL) {
+      return;
+    }
+    const upgradeCost = getTowerUpgradeCost(current.towerId, current.level);
+    if (!upgradeCost || !canAfford(state.resources, upgradeCost)) {
+      return;
+    }
+    const next = { ...current, level: current.level + 1 };
+    set({
+      resources: applyCost(state.resources, upgradeCost),
+      board: { ...state.board, [padId]: next },
+      logs: addLog(state.logs, `${getTowerById(current.towerId)?.name ?? current.towerId} upgraded to tier ${next.level}.`),
+      dirty: true
+    });
+  },
+
+  sellTower: (padId) => {
+    const state = get();
+    if (state.phase !== "build") {
+      return;
+    }
+    const current = state.board[padId];
+    if (!current) {
+      return;
+    }
+    const refund = getTowerSellRefund(current.towerId, current.level);
     const [nextResources, nextLifetime] = addGain(state.resources, state.lifetime, refund);
     set({
       resources: nextResources,
       lifetime: nextLifetime,
-      army: { ...state.army, [unitId]: current - 1 },
-      logs: addLog(state.logs, `${config.name} sold.`),
+      board: { ...state.board, [padId]: null },
+      logs: addLog(state.logs, `${getTowerById(current.towerId)?.name ?? current.towerId} salvaged.`),
       dirty: true
     });
   },
 
-  setFormation: (formationId) => {
-    if (!formationById[formationId]) {
-      return;
-    }
+  startWave: () => {
     const state = get();
-    set({ formation: formationId, logs: addLog(state.logs, `${formationById[formationId].name} selected.`), dirty: true });
-  },
-
-  runPrepOperation: (operationId) => {
-    const state = get();
-    const operation = operationById[operationId];
-    if (!operation || state.phase !== "build" || state.directiveUsed) {
+    if (state.phase !== "build" || state.lives <= 0) {
       return;
     }
-    const nextBuff: BattleBuff = {
-      ...state.battleBuff,
-      allyDamageMult: state.battleBuff.allyDamageMult * (operation.buff?.allyDamageMult ?? 1),
-      allyHpMult: state.battleBuff.allyHpMult * (operation.buff?.allyHpMult ?? 1),
-      allySpeedMult: state.battleBuff.allySpeedMult * (operation.buff?.allySpeedMult ?? 1),
-      allyRangeMult: state.battleBuff.allyRangeMult * (operation.buff?.allyRangeMult ?? 1),
-      allyCooldownMult: state.battleBuff.allyCooldownMult * (operation.buff?.allyCooldownMult ?? 1),
-      enemyDamageMult: state.battleBuff.enemyDamageMult * (operation.buff?.enemyDamageMult ?? 1),
-      enemyHpMult: state.battleBuff.enemyHpMult * (operation.buff?.enemyHpMult ?? 1),
-      notes: operation.note ? [...state.battleBuff.notes, operation.note] : state.battleBuff.notes
-    };
-    set({
-      directiveUsed: true,
-      battleBuff: nextBuff,
-      logs: addLog(state.logs, `${operation.name} primed.`),
-      dirty: true
-    });
-  },
-
-  beginTargetingCommand: (kind) => {
-    const state = get();
-    if (state.phase !== "battle" || kind !== "rally") {
+    if (countPlacedTowers(state.board) <= 0) {
       return;
     }
-    const readyAt = state.commandCooldownReadyAt[kind];
-    if (state.worldTime < readyAt) {
-      return;
-    }
-    set({ pendingTargetCommand: kind });
-  },
-
-  cancelTargetingCommand: () => {
-    set({ pendingTargetCommand: null });
-  },
-
-  issueCommand: (kind, target) => {
-    const state = get();
-    if (state.phase !== "battle") {
-      return;
-    }
-    if (kind === "rally" && !target) {
-      return;
-    }
-    const readyAt = state.commandCooldownReadyAt[kind];
-    if (state.worldTime < readyAt) {
-      return;
-    }
-
-    set({
-      commandQueue: [
-        ...state.commandQueue,
-        { seq: state.commandQueue.length + 1, kind, issuedAt: state.worldTime, target }
-      ],
-      commandCooldownReadyAt: {
-        ...state.commandCooldownReadyAt,
-        [kind]: state.worldTime + COMMAND_COOLDOWNS[kind]
-      },
-      pendingTargetCommand: null,
-      dirty: true
-    });
-  },
-
-  startBattle: () => {
-    const state = get();
-    if (state.phase === "battle" || getTotalArmyCount(state.army) <= 0 || state.commanderHp <= 0) {
-      return;
-    }
-    const prepSummary = state.battleBuff.notes.length ? ` ${state.battleBuff.notes.join(" ")}` : "";
     set({
       phase: "battle",
-      battleTimer: 90,
       battleNonce: state.battleNonce + 1,
-      commandQueue: [],
-      pendingTargetCommand: null,
-      logs: addLog(state.logs, `Stage ${state.stage} engagement started.${prepSummary}`),
+      battleTimer: WAVE_DURATION,
+      battleTelemetry: defaultBattleTelemetry(),
+      logs: addLog(state.logs, `Wave ${state.wave} started.`),
       dirty: true
     });
   },
 
-  resolveBattle: (result) => {
+  setBattleTelemetry: (telemetry) => {
+    const state = get();
+    if (state.phase !== "battle") {
+      return;
+    }
+    set({ battleTelemetry: telemetry });
+  },
+
+  resolveWave: (result) => {
     const state = get();
     if (state.phase !== "battle") {
       return;
     }
 
-    const nextArmy = { ...state.army };
-    for (const [unitId, loss] of Object.entries(result.casualties)) {
-      nextArmy[unitId] = Math.max(0, (nextArmy[unitId] ?? 0) - loss);
+    let nextLives = Math.max(0, state.lives - result.leaks);
+    let nextWave = state.wave;
+    let nextIncome = state.income;
+    let phase: Phase = "build";
+
+    if (result.completed) {
+      nextWave += 1;
+      if (nextWave % 3 === 0) {
+        nextIncome += 1;
+      }
     }
 
-    let resources = state.resources;
-    let lifetime = state.lifetime;
-    let stage = state.stage;
-    let commanderHp = state.commanderHp;
-    let level = state.level;
-    let xp = state.xp;
-    let winStreak = state.winStreak;
-    let loseStreak = state.loseStreak;
-
-    const creditsInterest = Math.min(5, Math.floor(resources.credits / 10));
-    const roundBase = 5 + Math.floor(state.stage / 2);
-
-    if (result.victory) {
-      stage += 1;
-      winStreak += 1;
-      loseStreak = 0;
-      const streakBonus = Math.min(3, Math.floor(winStreak / 2));
-      [resources, lifetime] = addGain(resources, lifetime, {
-        credits: roundBase + creditsInterest + streakBonus,
-        intel: 1 + Math.floor(stage / 4)
-      });
-    } else {
-      loseStreak += 1;
-      winStreak = 0;
-      const chipDamage = 6 + Math.floor(state.stage / 2);
-      commanderHp = Math.max(0, commanderHp - chipDamage);
-      [resources, lifetime] = addGain(resources, lifetime, {
-        credits: 2 + Math.min(3, Math.floor(loseStreak / 2)),
-        intel: 1
-      });
+    if (nextLives <= 0) {
+      phase = "gameover";
     }
 
-    const xpGain = 2;
-    const progressed = getXpProgress(level, xp + xpGain);
-    level = progressed.level;
-    xp = progressed.xp;
+    const interest = Math.min(9, Math.floor(state.resources.gold / 100));
+    const waveBonus = result.completed ? Math.max(4, Math.floor(state.wave * 1.1)) : 0;
+    const fallbackComp = result.completed ? 0 : 4;
+    const passiveGain: Partial<Resources> = {
+      gold: result.goldEarned + state.income + interest + waveBonus + fallbackComp,
+      essence: result.essenceEarned + (result.completed && state.wave % 2 === 0 ? 1 : 0)
+    };
 
-    const report = result.victory
-      ? `Victory at Stage ${state.stage}. Sectors held: ${result.sectorsHeld}/3. XP +${xpGain}.`
-      : `Defeat at Stage ${state.stage}. Commander integrity ${commanderHp}%. XP +${xpGain}.`;
+    const [nextResources, nextLifetime] = addGain(state.resources, state.lifetime, passiveGain);
 
-    const leveledLog =
-      progressed.leveled > 0
-        ? addLog(state.logs, `Command level upgraded to ${level}.`)
-        : state.logs;
+    const report = result.completed
+      ? `Wave ${state.wave} cleared. Kills ${result.kills}, leaks ${result.leaks}.`
+      : `Wave ${state.wave} timed out. Kills ${result.kills}, leaks ${result.leaks}.`;
 
-    const nextShop = state.shopLocked ? state.shop : rollShop(level);
     const gameOverLog =
-      commanderHp <= 0
-        ? addLog(addLog(leveledLog, report), "Run terminated. Reset to begin a new command run.")
-        : addLog(leveledLog, report);
+      phase === "gameover"
+        ? addLog(addLog(state.logs, report), "Bastion lost. Reset to launch a new defense run.")
+        : addLog(state.logs, report);
 
     set({
-      phase: "build",
+      resources: nextResources,
+      lifetime: nextLifetime,
+      phase,
+      wave: nextWave,
+      lives: nextLives,
+      income: nextIncome,
       battleTimer: 0,
-      army: nextArmy,
-      resources,
-      lifetime,
-      stage,
-      level,
-      xp,
-      commanderHp,
-      winStreak,
-      loseStreak,
-      directiveUsed: false,
-      battleBuff: { ...BASE_BATTLE_BUFF },
-      commandQueue: [],
-      pendingTargetCommand: null,
-      shop: nextShop,
-      shopLocked: state.shopLocked,
+      battleTelemetry: defaultBattleTelemetry(),
       lastReport: report,
       logs: gameOverLog,
       dirty: true
@@ -544,18 +339,21 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   tick: (dt) => {
     const state = get();
-    const rates = createResourceMap(0);
     const nextBattleTimer = state.phase === "battle" ? Math.max(0, state.battleTimer - dt) : 0;
-
     set({
-      rates,
       battleTimer: nextBattleTimer,
-      worldTime: state.worldTime + dt,
-      pendingTargetCommand: state.phase === "battle" ? state.pendingTargetCommand : null
+      worldTime: state.worldTime + dt
     });
 
     if (state.phase === "battle" && nextBattleTimer <= 0) {
-      get().resolveBattle({ victory: false, casualties: {}, sectorsHeld: 0 });
+      const pendingLeaks = state.battleTelemetry.remaining + state.battleTelemetry.incoming;
+      get().resolveWave({
+        completed: false,
+        kills: state.battleTelemetry.kills,
+        leaks: state.battleTelemetry.leaks + pendingLeaks,
+        goldEarned: state.battleTelemetry.goldEarned,
+        essenceEarned: state.battleTelemetry.essenceEarned
+      });
     }
   },
 
@@ -565,23 +363,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ loaded: true });
       return;
     }
+
     try {
       const parsed = JSON.parse(raw) as {
         version?: number;
         resources?: Partial<Resources>;
         lifetime?: Partial<Resources>;
-        stage?: number;
-        level?: number;
-        xp?: number;
-        commanderHp?: number;
-        winStreak?: number;
-        loseStreak?: number;
-        army?: Record<string, number>;
-        shop?: Array<string | null>;
-        shopLocked?: boolean;
-        formation?: FormationId;
-        directiveUsed?: boolean;
-        battleBuff?: Partial<BattleBuff>;
+        phase?: Phase;
+        wave?: number;
+        lives?: number;
+        income?: number;
+        board?: Record<number, TowerPlacement | null>;
+        selectedTowerId?: string | null;
         logs?: string[];
         lastReport?: string;
       };
@@ -593,38 +386,40 @@ export const useGameStore = create<GameState>((set, get) => ({
         lifetime[resource] = Math.max(0, parsed.lifetime?.[resource] ?? lifetime[resource]);
       }
 
-      const inputLevel = Math.max(1, Math.min(MAX_LEVEL, parsed.level ?? 1));
-      const normalizedXp = Math.max(0, parsed.xp ?? 0);
-      const progressed = getXpProgress(inputLevel, normalizedXp);
-
-      const savedShop = Array.isArray(parsed.shop) ? parsed.shop.slice(0, SHOP_SIZE) : [];
-      while (savedShop.length < SHOP_SIZE) {
-        savedShop.push(null);
+      const board = createEmptyBoard();
+      for (const [key, value] of Object.entries(parsed.board ?? {})) {
+        const padId = Number(key);
+        if (!Number.isFinite(padId) || !(padId in board) || !value) {
+          continue;
+        }
+        const tower = getTowerById(value.towerId);
+        if (!tower) {
+          continue;
+        }
+        board[padId] = {
+          padId,
+          towerId: value.towerId,
+          level: Math.max(1, Math.min(MAX_TOWER_LEVEL, value.level ?? 1))
+        };
       }
+
+      const phase = parsed.phase === "battle" ? "build" : parsed.phase ?? "build";
 
       set({
         resources,
         lifetime,
-        rates: createResourceMap(0),
-        stage: Math.max(1, parsed.stage ?? 1),
-        level: progressed.level,
-        xp: progressed.xp,
-        commanderHp: Math.max(0, Math.min(100, parsed.commanderHp ?? 100)),
-        winStreak: Math.max(0, parsed.winStreak ?? 0),
-        loseStreak: Math.max(0, parsed.loseStreak ?? 0),
-        army: { ...emptyCountsFromList(UNIT_CONFIGS), ...(parsed.army ?? {}) },
-        shop: savedShop,
-        shopLocked: Boolean(parsed.shopLocked),
-        formation: formationById[parsed.formation ?? "line"] ? (parsed.formation as FormationId) : "line",
-        directiveUsed: Boolean(parsed.directiveUsed),
-        battleBuff: {
-          ...BASE_BATTLE_BUFF,
-          ...(parsed.battleBuff ?? {}),
-          notes: Array.isArray(parsed.battleBuff?.notes) ? parsed.battleBuff.notes : []
-        },
-        logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 60) : ["Save loaded."],
-        lastReport: parsed.lastReport ?? "No rounds completed.",
-        pendingTargetCommand: null,
+        phase,
+        wave: Math.max(1, parsed.wave ?? 1),
+        lives: Math.max(0, Math.min(INITIAL_LIVES, parsed.lives ?? INITIAL_LIVES)),
+        income: Math.max(6, parsed.income ?? INITIAL_INCOME),
+        board,
+        selectedTowerId: parsed.selectedTowerId && getTowerById(parsed.selectedTowerId) ? parsed.selectedTowerId : "guard",
+        battleNonce: 0,
+        battleTimer: 0,
+        worldTime: 0,
+        battleTelemetry: defaultBattleTelemetry(),
+        logs: Array.isArray(parsed.logs) ? parsed.logs.slice(0, 70) : ["Save loaded."],
+        lastReport: parsed.lastReport ?? "No waves completed.",
         loaded: true,
         dirty: false
       });
@@ -644,28 +439,18 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       resources: { ...INITIAL_RESOURCES },
       lifetime: createResourceMap(0),
-      rates: createResourceMap(0),
-      stage: 1,
-      level: 1,
-      xp: 0,
-      commanderHp: 100,
-      winStreak: 0,
-      loseStreak: 0,
-      army: emptyCountsFromList(UNIT_CONFIGS),
-      shop: rollShop(1),
-      shopLocked: false,
-      formation: "line",
-      directiveUsed: false,
-      battleBuff: { ...BASE_BATTLE_BUFF },
       phase: "build",
+      wave: 1,
+      lives: INITIAL_LIVES,
+      income: INITIAL_INCOME,
+      board: createEmptyBoard(),
+      selectedTowerId: "guard",
       battleNonce: 0,
       battleTimer: 0,
       worldTime: 0,
-      commandQueue: [],
-      commandCooldownReadyAt: { rally: 0, retreat: 0, overdrive: 0 },
-      pendingTargetCommand: null,
-      logs: ["Command uplink reset."],
-      lastReport: "No rounds completed.",
+      battleTelemetry: defaultBattleTelemetry(),
+      logs: ["Bastion command reset."],
+      lastReport: "No waves completed.",
       dirty: true
     });
   }
@@ -678,3 +463,4 @@ export function getVisibleResources(): ResourceKey[] {
 export function formatResourcePair(resource: ResourceKey, value: number): string {
   return `${RESOURCE_LABELS[resource]} ${Math.floor(value).toLocaleString()}`;
 }
+
