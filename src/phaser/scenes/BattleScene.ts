@@ -1,16 +1,22 @@
 import Phaser from "phaser";
 import {
+  MAX_TOWER_LEVEL,
   PAD_LAYOUT,
+  RESOURCE_ORDER,
   RESOURCE_LABELS,
   TOWER_CONFIGS,
   WAVE_DURATION,
   getEnemyById,
   getTowerById,
   getTowerStats,
+  getTowerUpgradeCost,
   getWaveDefinition
 } from "../../game/config";
 import { useGameStore } from "../../game/store";
 import type { BattleTelemetry, TowerPlacement } from "../../game/types";
+
+type StoreSnapshot = ReturnType<typeof useGameStore.getState>;
+type PadActionKind = "build" | "upgrade" | "occupied" | "maxed" | "invalid" | "inactive";
 
 interface TowerActor {
   padId: number;
@@ -68,6 +74,7 @@ export class BattleScene extends Phaser.Scene {
   private enemies: EnemyActor[] = [];
   private pads = new Map<number, Phaser.GameObjects.Arc>();
   private padZones: Phaser.GameObjects.Zone[] = [];
+  private hoveredPadId: number | null = null;
   private activeWaveNonce = -1;
   private running = false;
   private waveElapsed = 0;
@@ -80,6 +87,10 @@ export class BattleScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   private timerText!: Phaser.GameObjects.Text;
   private coreText!: Phaser.GameObjects.Text;
+  private previewBody!: Phaser.GameObjects.Rectangle;
+  private previewTurret!: Phaser.GameObjects.Rectangle;
+  private previewRange!: Phaser.GameObjects.Arc;
+  private previewHint!: Phaser.GameObjects.Text;
   private segmentLengths: number[] = [];
   private pathLength = 0;
 
@@ -113,6 +124,14 @@ export class BattleScene extends Phaser.Scene {
     for (const pad of PAD_LAYOUT) {
       const padCircle = this.add.circle(pad.x, pad.y, 16, 0x2a3e4f, 0.65).setStrokeStyle(2, 0x70a4bd, 0.6);
       const hitZone = this.add.zone(pad.x, pad.y, 44, 44).setInteractive({ useHandCursor: true });
+      hitZone.on("pointerover", () => {
+        this.hoveredPadId = pad.id;
+      });
+      hitZone.on("pointerout", () => {
+        if (this.hoveredPadId === pad.id) {
+          this.hoveredPadId = null;
+        }
+      });
       hitZone.on("pointerdown", () => {
         const state = useGameStore.getState();
         if (state.phase !== "build") {
@@ -123,13 +142,28 @@ export class BattleScene extends Phaser.Scene {
       this.pads.set(pad.id, padCircle);
       this.padZones.push(hitZone);
     }
+
+    this.previewRange = this.add.circle(0, 0, 42, 0x8ce8ff, 0.03).setStrokeStyle(1, 0x9de9ff, 0.32).setDepth(8);
+    this.previewBody = this.add.rectangle(0, 0, 30, 34, 0x7cc8ff, 0.38).setStrokeStyle(1, 0xdff8ff, 0.28).setDepth(15);
+    this.previewTurret = this.add.rectangle(0, 0, 8, 18, 0xe6f8ff, 0.5).setDepth(16);
+    this.previewHint = this.add
+      .text(0, 0, "", {
+        fontFamily: "Trebuchet MS",
+        fontSize: "11px",
+        color: "#d5f7ff",
+        backgroundColor: "rgba(12, 34, 47, 0.72)"
+      })
+      .setPadding(5, 3, 5, 3)
+      .setDepth(17);
+    this.hidePreview();
   }
 
   update(_: number, deltaMs: number): void {
     const dt = deltaMs / 1000;
     const state = useGameStore.getState();
     this.timerText.setText(state.phase === "battle" ? `${Math.ceil(state.battleTimer)}s` : `${WAVE_DURATION}s`);
-    this.syncPadVisuals(state.selectedTowerId, state.phase);
+    this.syncPadVisuals(state);
+    this.syncPreview(state);
     this.syncTowers(state.board, state.phase);
 
     if (state.phase === "battle" && state.battleNonce !== this.activeWaveNonce) {
@@ -205,17 +239,184 @@ export class BattleScene extends Phaser.Scene {
     return PATH_POINTS[PATH_POINTS.length - 1].clone();
   }
 
-  private syncPadVisuals(selectedTowerId: string | null, phase: string): void {
+  private syncPadVisuals(state: StoreSnapshot): void {
     for (const pad of PAD_LAYOUT) {
       const padCircle = this.pads.get(pad.id);
       if (!padCircle) {
         continue;
       }
-      const hasTower = Boolean(this.towers.get(pad.id));
-      const interactiveGlow = phase === "build" && selectedTowerId && !hasTower;
-      padCircle.setFillStyle(hasTower ? 0x33566e : 0x2a3e4f, interactiveGlow ? 0.9 : 0.62);
-      padCircle.setStrokeStyle(2, interactiveGlow ? 0x9de9ff : 0x70a4bd, hasTower ? 0.95 : 0.55);
+
+      const action = this.getPadAction(state, pad.id);
+      const hovered = this.hoveredPadId === pad.id;
+      let fillColor = 0x2a3e4f;
+      let fillAlpha = 0.62;
+      let strokeColor = 0x70a4bd;
+      let strokeAlpha = 0.55;
+
+      if (action.kind === "build") {
+        fillColor = 0x2f5758;
+        fillAlpha = 0.82;
+        strokeColor = 0x89f8d9;
+        strokeAlpha = 0.98;
+      } else if (action.kind === "upgrade") {
+        fillColor = 0x5f4f34;
+        fillAlpha = 0.84;
+        strokeColor = 0xffd08f;
+        strokeAlpha = 0.98;
+      } else if (action.kind === "invalid") {
+        fillColor = 0x55373d;
+        fillAlpha = 0.76;
+        strokeColor = 0xff9c9c;
+        strokeAlpha = 0.9;
+      } else if (action.kind === "maxed") {
+        fillColor = 0x4d3d66;
+        fillAlpha = 0.82;
+        strokeColor = 0xd7b8ff;
+        strokeAlpha = 0.94;
+      } else if (action.kind === "occupied") {
+        fillColor = 0x33566e;
+        fillAlpha = 0.86;
+        strokeColor = 0x83c2e2;
+        strokeAlpha = 0.9;
+      } else if (this.towers.has(pad.id)) {
+        fillColor = 0x33566e;
+        fillAlpha = 0.78;
+        strokeColor = 0x7db7d7;
+        strokeAlpha = 0.82;
+      }
+
+      if (hovered) {
+        fillAlpha = Math.min(0.96, fillAlpha + 0.12);
+        strokeAlpha = 1;
+      }
+
+      padCircle.setRadius(hovered ? 17.6 : 16);
+      padCircle.setFillStyle(fillColor, fillAlpha);
+      padCircle.setStrokeStyle(2, strokeColor, strokeAlpha);
     }
+  }
+
+  private canAffordCost(resources: StoreSnapshot["resources"], cost?: Partial<StoreSnapshot["resources"]>): boolean {
+    if (!cost) {
+      return true;
+    }
+    return RESOURCE_ORDER.every((resource) => (resources[resource] ?? 0) >= (cost[resource] ?? 0));
+  }
+
+  private formatCost(cost?: Partial<StoreSnapshot["resources"]>): string {
+    if (!cost) {
+      return "";
+    }
+    const parts: string[] = [];
+    for (const resource of RESOURCE_ORDER) {
+      const value = cost[resource];
+      if (!value) {
+        continue;
+      }
+      parts.push(`${Math.ceil(value)} ${RESOURCE_LABELS[resource]}`);
+    }
+    return parts.join(" / ");
+  }
+
+  private getPadAction(
+    state: StoreSnapshot,
+    padId: number
+  ): { kind: PadActionKind; hint: string; previewLevel: number } {
+    if (state.phase !== "build") {
+      return { kind: "inactive", hint: "", previewLevel: 1 };
+    }
+    const selectedTowerId = state.selectedTowerId;
+    if (!selectedTowerId) {
+      return { kind: "invalid", hint: "Select a tower first.", previewLevel: 1 };
+    }
+    const tower = getTowerById(selectedTowerId);
+    if (!tower) {
+      return { kind: "invalid", hint: "Invalid tower selection.", previewLevel: 1 };
+    }
+
+    const slot = state.board[padId];
+    if (!slot) {
+      if (this.canAffordCost(state.resources, tower.cost)) {
+        return { kind: "build", hint: `Build ${tower.name} (${this.formatCost(tower.cost)})`, previewLevel: 1 };
+      }
+      return { kind: "invalid", hint: `Need ${this.formatCost(tower.cost)}`, previewLevel: 1 };
+    }
+
+    if (slot.towerId !== selectedTowerId) {
+      return { kind: "occupied", hint: "Pad occupied by another tower type.", previewLevel: 1 };
+    }
+
+    if (slot.level >= MAX_TOWER_LEVEL) {
+      return { kind: "maxed", hint: "Max tier reached on this pad.", previewLevel: slot.level };
+    }
+
+    const upgradeCost = getTowerUpgradeCost(slot.towerId, slot.level);
+    const previewLevel = Math.min(MAX_TOWER_LEVEL, slot.level + 1);
+    if (!upgradeCost) {
+      return { kind: "maxed", hint: "Max tier reached on this pad.", previewLevel };
+    }
+    if (this.canAffordCost(state.resources, upgradeCost)) {
+      return { kind: "upgrade", hint: `Upgrade (${this.formatCost(upgradeCost)})`, previewLevel };
+    }
+    return { kind: "invalid", hint: `Need ${this.formatCost(upgradeCost)}`, previewLevel };
+  }
+
+  private syncPreview(state: StoreSnapshot): void {
+    if (state.phase !== "build" || this.hoveredPadId === null || !state.selectedTowerId) {
+      this.hidePreview();
+      return;
+    }
+
+    const tower = getTowerById(state.selectedTowerId);
+    const pad = PAD_LAYOUT.find((entry) => entry.id === this.hoveredPadId);
+    if (!tower || !pad) {
+      this.hidePreview();
+      return;
+    }
+
+    const action = this.getPadAction(state, pad.id);
+    const stats = getTowerStats(state.selectedTowerId, action.previewLevel);
+    const isValid = action.kind === "build" || action.kind === "upgrade";
+
+    const ringColor =
+      action.kind === "upgrade"
+        ? 0xffcf8a
+        : action.kind === "build"
+          ? 0x89f8d9
+          : action.kind === "maxed"
+            ? 0xd7b8ff
+            : action.kind === "occupied"
+              ? 0x83c2e2
+              : 0xff9c9c;
+    const labelX = Phaser.Math.Clamp(pad.x - 78, 20, 650);
+    const labelY = Phaser.Math.Clamp(pad.y - stats.range - 20, 30, 560);
+
+    this.previewRange.setPosition(pad.x, pad.y);
+    this.previewRange.setRadius(stats.range);
+    this.previewRange.setStrokeStyle(1, ringColor, isValid ? 0.34 : 0.24);
+    this.previewRange.setFillStyle(ringColor, isValid ? 0.035 : 0.018);
+
+    this.previewBody.setPosition(pad.x, pad.y);
+    this.previewBody.setFillStyle(tower.color, isValid ? 0.52 : 0.22);
+    this.previewBody.setStrokeStyle(1, 0xe5f9ff, isValid ? 0.34 : 0.18);
+    this.previewTurret.setPosition(pad.x, pad.y - 16);
+    this.previewTurret.setFillStyle(0xe6f8ff, isValid ? 0.64 : 0.28);
+
+    this.previewHint.setPosition(labelX, labelY);
+    this.previewHint.setText(action.hint);
+    this.previewHint.setColor(isValid ? "#d5f7ff" : "#ffd6d6");
+
+    this.previewRange.setVisible(true);
+    this.previewBody.setVisible(true);
+    this.previewTurret.setVisible(true);
+    this.previewHint.setVisible(true);
+  }
+
+  private hidePreview(): void {
+    this.previewRange?.setVisible(false);
+    this.previewBody?.setVisible(false);
+    this.previewTurret?.setVisible(false);
+    this.previewHint?.setVisible(false);
   }
 
   private syncTowers(board: Record<number, TowerPlacement | null>, phase: string): void {
@@ -290,6 +491,8 @@ export class BattleScene extends Phaser.Scene {
   private beginWave(wave: number, nonce: number): void {
     this.activeWaveNonce = nonce;
     this.running = true;
+    this.hoveredPadId = null;
+    this.hidePreview();
     this.waveElapsed = 0;
     this.spawnQueue = [];
     this.waveKills = 0;

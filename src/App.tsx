@@ -132,6 +132,38 @@ export default function App(): JSX.Element {
     };
   }, []);
 
+  useEffect(() => {
+    const towerHotkeys = TOWER_CONFIGS.slice(0, 4).map((tower) => tower.id);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName;
+      if (tagName === "INPUT" || tagName === "TEXTAREA" || target?.isContentEditable) {
+        return;
+      }
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      const digitMatch = event.code.match(/^(Digit|Numpad)([1-4])$/);
+      if (digitMatch) {
+        const index = Number(digitMatch[2]) - 1;
+        const towerId = towerHotkeys[index];
+        if (towerId) {
+          useGameStore.getState().selectTower(towerId);
+        }
+        return;
+      }
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        useGameStore.getState().startWave();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const visibleResources = useMemo(() => getVisibleResources(), []);
   const builtTowers = useMemo(() => {
     const entries = Object.values(board).filter((slot): slot is NonNullable<typeof slot> => Boolean(slot));
@@ -256,6 +288,7 @@ export default function App(): JSX.Element {
               battleTelemetry.goldEarned
             )} Gold`}
           </p>
+          <p className="muted">Hotkeys: `1-4` select tower, `Space` starts wave.</p>
           <p className="report">{lastReport}</p>
         </section>
 
@@ -325,4 +358,3 @@ export default function App(): JSX.Element {
     </div>
   );
 }
-
