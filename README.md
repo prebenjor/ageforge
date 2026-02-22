@@ -1,25 +1,39 @@
-# Idle Forge Android
+﻿# Black Signal: The Vigil Station
 
-This repo now includes a native Android idle game scaffold in `android/` using Kotlin + Jetpack Compose.
+Browser-playable horror incremental game built with `Vite + React + TypeScript`.
 
-## Current Android Features
+## Concept
 
-- manual tap income
-- passive building production
-- upgrade system with scaling costs
-- persistent save (SharedPreferences)
-- offline progress catch-up on app launch
+You run a cursed surveillance station.
 
-## Open In Android Studio
+- harvest static from dead frequencies
+- transmute fear into Night Ink
+- etch upgrades to survive escalating exposure
+- solve rotating omen sigils for production bonuses
+- launch risky Night Hunts for relic progression
 
-1. Open Android Studio.
-2. Choose `Open` and select the `android/` folder.
-3. Wait for Gradle sync.
-4. Run on emulator or device.
+## Run
 
-## Project Structure
+```bash
+npm install
+npm run dev
+```
 
-- `android/app/src/main/java/com/prebenjor/idleforge/MainActivity.kt`
-- `android/app/src/main/java/com/prebenjor/idleforge/game/GameModels.kt`
-- `android/app/src/main/java/com/prebenjor/idleforge/game/GameViewModel.kt`
-- `android/app/src/main/java/com/prebenjor/idleforge/game/GameStorage.kt`
+## Build
+
+```bash
+npm run build
+npm run preview
+```
+
+## Architecture (Modular + Scalable)
+
+- `src/game/content.ts`: game data tables (resources, buildings, upgrades, constants)
+- `src/game/types.ts`: domain types and action contracts
+- `src/game/engine.ts`: pure reducer + tick simulation + economy logic
+- `src/game/storage.ts`: save/load persistence boundaries
+- `src/game/selectors.ts`: derived values for UI
+- `src/hooks/useHorrorGame.ts`: game loop and autosave orchestration
+- `src/components/*`: isolated UI panels
+
+This separation keeps features extensible without coupling simulation, persistence, and rendering.

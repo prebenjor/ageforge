@@ -1,69 +1,60 @@
-export type ResourceKey = "gold" | "essence";
+﻿export type ResourceKey = "static" | "fear" | "ink" | "relics";
 
 export type Resources = Record<ResourceKey, number>;
 
-export type Phase = "build" | "battle" | "gameover";
-
-export interface TowerConfig {
+export interface BuildingDef {
   id: string;
   name: string;
-  role: "single" | "aoe" | "control";
-  description: string;
+  lore: string;
+  baseCost: Partial<Resources>;
+  costScale: number;
+}
+
+export interface UpgradeDef {
+  id: string;
+  name: string;
+  lore: string;
   cost: Partial<Resources>;
-  baseDamage: number;
-  baseRange: number;
-  baseCooldown: number;
-  projectileSpeed: number;
-  color: number;
-  projectileColor: number;
-  splashRadius?: number;
-  slowFactor?: number;
-  slowDuration?: number;
 }
 
-export interface TowerPlacement {
-  padId: number;
-  towerId: string;
-  level: number;
+export interface GameState {
+  resources: Resources;
+  buildings: Record<string, number>;
+  upgrades: Record<string, boolean>;
+  sigils: number[];
+  omen: number[];
+  omenShiftIn: number;
+  exposure: number;
+  breaches: number;
+  huntRemaining: number;
+  worldTime: number;
+  logs: string[];
+  dirty: boolean;
+  loaded: boolean;
 }
 
-export interface EnemyConfig {
-  id: string;
-  name: string;
-  hp: number;
-  speed: number;
-  rewardGold: number;
-  rewardEssence: number;
-  radius: number;
-  color: number;
-}
+export type ManualRitualKind = "scan" | "invoke" | "scribe" | "calm";
 
-export interface WaveGroup {
-  enemyId: string;
-  count: number;
-  interval: number;
-  startAt: number;
-}
+export type GameAction =
+  | { type: "load"; payload: GameState }
+  | { type: "mark_loaded" }
+  | { type: "tick"; dt: number }
+  | { type: "rotate_sigil"; index: number }
+  | { type: "manual_ritual"; kind: ManualRitualKind }
+  | { type: "buy_building"; buildingId: string }
+  | { type: "buy_upgrade"; upgradeId: string }
+  | { type: "start_hunt" }
+  | { type: "mark_saved" }
+  | { type: "reset" };
 
-export interface WaveDefinition {
-  label: string;
-  groups: WaveGroup[];
+export interface DerivedStats {
+  omenMatch: number;
+  productionPerSecond: {
+    staticGain: number;
+    fearGain: number;
+    inkGain: number;
+    exposureDrift: number;
+    exposureControl: number;
+  };
+  night: number;
 }
-
-export interface WaveResult {
-  completed: boolean;
-  leaks: number;
-  kills: number;
-  goldEarned: number;
-  essenceEarned: number;
-}
-
-export interface BattleTelemetry {
-  kills: number;
-  leaks: number;
-  remaining: number;
-  incoming: number;
-  goldEarned: number;
-  essenceEarned: number;
-}
-
