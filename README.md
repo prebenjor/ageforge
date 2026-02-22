@@ -1,34 +1,25 @@
-# Ageforge Command Front
+# Idle Forge Android
 
-Ageforge is now a `Vite + React + TypeScript + Phaser` game prototype that blends:
+This repo now includes a native Android idle game scaffold in `android/` using Kotlin + Jetpack Compose.
 
-- incremental economy progression across historical ages
-- autobattler army composition
-- light RTS command abilities during combat (`Rally`, `Retreat`, `Overdrive`)
+## Current Android Features
 
-## Development
+- manual tap income
+- passive building production
+- upgrade system with scaling costs
+- persistent save (SharedPreferences)
+- offline progress catch-up on app launch
 
-```bash
-npm install
-npm run dev
-```
+## Open In Android Studio
 
-## Build
+1. Open Android Studio.
+2. Choose `Open` and select the `android/` folder.
+3. Wait for Gradle sync.
+4. Run on emulator or device.
 
-```bash
-npm run build
-npm run preview
-```
+## Project Structure
 
-## Gameplay Loop (Current Prototype)
-
-1. Gather resources and build structures in the **build phase**.
-2. Train units to fill your roster.
-3. Start a battle in the Phaser theater.
-4. Issue RTS commands while units auto-fight.
-5. Win sectors and battles to accelerate progression to later ages.
-
-## Deploy
-
-GitHub Pages deployment is configured in `.github/workflows/pages.yml`.
-Pushes to `main` run `npm ci`, `npm run build`, and publish `dist/`.
+- `android/app/src/main/java/com/prebenjor/idleforge/MainActivity.kt`
+- `android/app/src/main/java/com/prebenjor/idleforge/game/GameModels.kt`
+- `android/app/src/main/java/com/prebenjor/idleforge/game/GameViewModel.kt`
+- `android/app/src/main/java/com/prebenjor/idleforge/game/GameStorage.kt`
